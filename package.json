@@ -1,0 +1,27 @@
+{
+  "name": "vivino-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Vivino wine data",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --noCheck",
+    "build:watch": "tsc --noCheck --watch",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "axios": "^1.7.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^16.5.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.6"
+  }
+}
