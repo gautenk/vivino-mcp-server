@@ -1,6 +1,13 @@
-# Vivino MCP Server
+# 🍇 Vivino MCP Server
 
-An MCP (Model Context Protocol) server that brings your Vivino wine ratings into Claude and other AI applications. Access personal wine data, search the Vivino catalog, and sync ratings to Obsidian.
+**Your years of wine ratings, finally readable by your AI. Ask it what to drink.**
+
+![MCP](https://img.shields.io/badge/protocol-MCP-6E56CF?style=flat-square)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Node 18+](https://img.shields.io/badge/Node-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+
+An MCP (Model Context Protocol) server that brings your Vivino wine ratings into Claude and other AI applications. Access personal wine data, search the Vivino catalog, read structured taste profiles, and sync your ratings to Obsidian, all from a chat.
 
 ## Features
 
