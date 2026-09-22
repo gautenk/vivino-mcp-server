@@ -84,9 +84,16 @@ export async function searchWines(args: {
     let resolvedRegion: { id: number; name: string } | null = null;
     try {
       resolvedRegion = await resolveRegionFromQuery(args.query);
-    } catch {
+    } catch (lookupErr) {
       // Lookup failure shouldn't block the search — fall through with no
-      // region resolved, same as a genuine no-match.
+      // region resolved, same as a genuine no-match. But DO log it (stderr,
+      // visible in `docker compose logs`) — a prior version of this swallowed
+      // the error completely, which made a real failure indistinguishable
+      // from a genuine "no region matched" and cost a full debugging round.
+      console.error(
+        `[vivino_search_wines] resolveRegionFromQuery("${args.query}") failed:`,
+        lookupErr instanceof Error ? lookupErr.message : lookupErr
+      );
     }
 
     const raw = await fetchWineSearch({
