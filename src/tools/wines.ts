@@ -5,18 +5,31 @@ import { VivinoWineDetails, VivinoTasteProfile } from '../types';
 export const wineDetailsInputSchema = {
   wine_id: z.number().int().positive()
     .describe('Vivino wine ID (numeric). Obtain from vivino_get_user_ratings or vivino_search_wines.'),
+  vintage_id: z.number().int().positive().optional()
+    .describe(
+      'Strongly recommended when available: the vintage_id field from vivino_search_wines\' ' +
+      'results. Vivino details live on a separate "vintage" ID, not the wine ID — passing this ' +
+      'goes straight to the correct data. Without it, the server either scrapes the real vintage ' +
+      'ID from wine_url (if given) or falls back to guessing wine_id also works as a vintage ID, ' +
+      'which can silently return the WRONG wine instead of erroring.'
+    ),
   wine_url: z.string().optional()
     .describe(
-      'Optional: the wine_url (from vivino_get_user_ratings) or vivino_url (from ' +
-      'vivino_search_wines) for this wine. The direct /api/wines/{id} lookup 404s for many ' +
-      'IDs; when that happens the server falls back to scraping the real vintage ID from this ' +
-      'page and retrying against /api/vintages/{id}. Passing it up front avoids the 404 round-trip.'
+      'The wine_url (from vivino_get_user_ratings) or vivino_url (from vivino_search_wines) for ' +
+      'this wine. Used only when vintage_id isn\'t known: the server scrapes the real vintage ID ' +
+      'from this specific page rather than guessing. Always pass this when you don\'t have ' +
+      'vintage_id — without either, results for a wine_id sourced from vivino_get_user_ratings ' +
+      'can come back as a completely different, unrelated wine.'
     ),
 };
 
 export const tasteProfileInputSchema = {
   wine_id: z.number().int().positive()
-    .describe('Vivino wine ID (numeric). Obtain from vivino_get_user_ratings or vivino_search_wines.'),
+    .describe(
+      'Vivino wine ID — from vivino_get_user_ratings\' wine_id, or vivino_search_wines\' ' +
+      'wine_id field specifically (NOT its vintage_id; that\'s a different ID space and returns ' +
+      'a 404 here instead of the taste data).'
+    ),
 };
 
 export function parseWineDetails(raw: unknown): VivinoWineDetails {
@@ -86,10 +99,10 @@ export function parseTasteProfile(raw: unknown): VivinoTasteProfile {
 }
 
 export async function getWineDetails(
-  args: { wine_id: number; wine_url?: string }
+  args: { wine_id: number; vintage_id?: number; wine_url?: string }
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
-    const raw = await fetchWineDetails(args.wine_id, args.wine_url ?? null);
+    const raw = await fetchWineDetails(args.wine_id, args.vintage_id ?? null, args.wine_url ?? null);
     const details = parseWineDetails(raw);
     return { content: [{ type: 'text', text: JSON.stringify(details, null, 2) }] };
   } catch (err) {

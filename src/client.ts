@@ -210,28 +210,40 @@ async function scrapeRealVintageId(urlWineId: number, wineUrl: string): Promise<
   }, CACHE_TTL_WINE_DETAILS_MS);
 }
 
-export async function fetchWineDetails(wineId: number, wineUrl?: string | null): Promise<unknown> {
-  return getCached(`wine:${wineId}`, async () => {
-    try {
-      // /api/wines/{id} is confirmed dead on Vivino's side as of 2026-09 — it
-      // 404s unconditionally, even for a wine ID pulled straight out of a live
-      // explore response. The IDs this server actually deals in (from
-      // getUserRatings' /w/{id} URLs, and now from searchWines below) are
-      // vintage IDs, and /api/vintages/{id} is the endpoint that actually
-      // serves wine detail data. Go straight there.
-      const res = await withRetry(() => apiHttp.get(`/vintages/${wineId}`));
+// Vivino runs two separate, non-interchangeable ID spaces (confirmed live,
+// 2026-09-22): a "wine" ID (works with /api/wines/{id}/tastes and /reviews)
+// and a "vintage" ID (works with /api/vintages/{id}, the only endpoint that
+// actually serves detail data — /api/wines/{id} itself is dead, 404s
+// unconditionally). Critically, the two ID spaces overlap: a wine ID handed
+// to /api/vintages/{id} can return HTTP 200 with a completely unrelated
+// wine's data instead of a clean error, so guessing is dangerous — a wrong
+// ID has to be resolved via a real vintage ID or a page scrape, never
+// assumed to work "close enough".
+export async function fetchWineDetails(
+  wineId: number,
+  vintageId?: number | null,
+  wineUrl?: string | null
+): Promise<unknown> {
+  return getCached(`wine:${wineId}:${vintageId ?? ''}:${wineUrl ?? ''}`, async () => {
+    // 1) A real vintage ID (e.g. from vivino_search_wines' vintage_id field)
+    //    is authoritative — use it directly, no scrape needed.
+    if (vintageId != null) {
+      const res = await withRetry(() => apiHttp.get(`/vintages/${vintageId}`));
       return res.data;
-    } catch (err) {
-      const e = err as AxiosError;
-      if (e.response?.status === 404 && wineUrl) {
-        // Only reached if the caller passed an ID that isn't a valid vintage
-        // ID after all (e.g. stale data) — scrape the real one from the page.
-        const realVintageId = await scrapeRealVintageId(wineId, wineUrl);
-        const res = await withRetry(() => apiHttp.get(`/vintages/${realVintageId}`));
-        return res.data;
-      }
-      throw err;
     }
+    // 2) No vintage ID, but a page URL — scrape the real vintage ID from
+    //    that specific page rather than guessing wineId is also a valid
+    //    vintage ID (it usually isn't, and when it coincidentally IS a valid
+    //    ID in that space, it silently points at some unrelated wine).
+    if (wineUrl) {
+      const realVintageId = await scrapeRealVintageId(wineId, wineUrl);
+      const res = await withRetry(() => apiHttp.get(`/vintages/${realVintageId}`));
+      return res.data;
+    }
+    // 3) Last resort: neither given. Best-effort guess that wineId is
+    //    usable directly — may 404, or (rarely) return the wrong wine.
+    const res = await withRetry(() => apiHttp.get(`/vintages/${wineId}`));
+    return res.data;
   }, CACHE_TTL_WINE_DETAILS_MS);
 }
 

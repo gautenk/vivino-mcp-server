@@ -84,10 +84,13 @@ describe('searchWines', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.results).toHaveLength(1);
     expect(parsed.results[0]).toMatchObject({
-      // wine_id is the VINTAGE id (99001), not wine.id (42) — confirmed live
-      // that /api/wines/{wine.id} 404s unconditionally while
-      // /api/vintages/{vintage.id} is the endpoint that actually works.
-      wine_id: 99001,
+      // wine_id stays wine.id (42) — it's what vivino_get_wine_taste_profile
+      // and vivino_get_wine_reviews need. vintage_id (99001) is separate and
+      // is what vivino_get_wine_details needs — confirmed live that the two
+      // ID spaces are NOT interchangeable (/api/wines/{id} is dead outright,
+      // and /api/vintages/{wine.id} can silently return an unrelated wine).
+      wine_id: 42,
+      vintage_id: 99001,
       name: 'Test Barolo',
       winery: 'Test Winery',
       region: 'Piedmont',
@@ -97,7 +100,7 @@ describe('searchWines', () => {
     });
   });
 
-  it('skips a match with no vintage id rather than emitting a broken wine_id', async () => {
+  it('sets vintage_id to null (not omitted) when a match has no vintage id', async () => {
     mockFetchWineSearch.mockResolvedValue({
       explore_vintage: {
         records_matched: 1,
@@ -111,7 +114,9 @@ describe('searchWines', () => {
     });
     const result = await searchWines(baseArgs());
     const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.results).toHaveLength(0);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].vintage_id).toBeNull();
+    expect(parsed.results[0].vivino_url).toBeNull();
   });
 
   it('does not throw on a bare-query error response and reports it as text', async () => {

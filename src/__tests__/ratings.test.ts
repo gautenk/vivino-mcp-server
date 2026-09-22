@@ -50,9 +50,22 @@ describe('getUserRatings', () => {
     mockResolveUserId.mockResolvedValue(12345);
   });
 
-  it('has_more is false when the raw page is shorter than per_page (true end of data)', async () => {
+  it('has_more is true whenever a cursor and at least one item come back, even if shorter than per_page', async () => {
+    // Live testing (2026-09-22) showed Vivino's activities endpoint doesn't
+    // reliably honor the requested per_page/limit — it can return a shorter
+    // batch than asked for while more history still exists. Comparing raw
+    // count to per_page produced a false has_more:false in that case, so a
+    // present next_start_from cursor is now trusted on its own.
     const html = activityHtml([{ id: 1, rating: 4, wine: 'A', winery: 'W1' }]);
     mockFetchActivities.mockResolvedValue(html);
+    const result = await getUserRatings({ page: 1, per_page: 25 });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.has_more).toBe(true);
+    expect(parsed.next_start_from).toBe('act1');
+  });
+
+  it('has_more is false only on a genuinely empty page (true end of data)', async () => {
+    mockFetchActivities.mockResolvedValue(activityHtml([]));
     const result = await getUserRatings({ page: 1, per_page: 25 });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.has_more).toBe(false);

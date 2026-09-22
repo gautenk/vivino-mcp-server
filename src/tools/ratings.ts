@@ -171,9 +171,15 @@ export async function getUserRatings(args: {
       next_start_from: lastActivityId,
       // has_more must reflect the RAW page (before our min/max/since filtering) —
       // a filtered page can legitimately return fewer than per_page results while
-      // more unseen activities still exist upstream. A full raw page (rawItemCount
-      // === per_page) plus a cursor to continue from is the actual "more data" signal.
-      has_more: lastActivityId !== null && rawItemCount === args.per_page,
+      // more unseen activities still exist upstream. Previously this compared
+      // rawItemCount to args.per_page, but live testing showed Vivino's activities
+      // endpoint doesn't reliably honor the requested limit — it can return a
+      // different batch size regardless of what was asked for, which made that
+      // comparison false-negative (has_more: false while a valid next_start_from
+      // cursor was still present). A present cursor plus at least one item on this
+      // page is the only signal actually confirmed reliable; end of history shows
+      // up as an empty page (rawItemCount === 0) instead.
+      has_more: lastActivityId !== null && rawItemCount > 0,
       ratings,
     };
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

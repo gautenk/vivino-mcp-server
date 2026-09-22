@@ -27,8 +27,10 @@ server.registerTool(
       'Filter with min_rating/max_rating, since (only ratings newer than a date), or ' +
       'wine_name_query ("have I rated this wine?" — matches within the page(s) fetched; ' +
       'paginate with start_from if not found and has_more is true). ' +
-      'Wine IDs (and wine_url) returned here can be used with vivino_get_wine_details, ' +
-      'vivino_get_wine_taste_profile, and vivino_get_wine_reviews.',
+      'Wine IDs (and wine_url) returned here can be used with vivino_get_wine_taste_profile and ' +
+      'vivino_get_wine_reviews directly. For vivino_get_wine_details, this wine_id/wine_url pair ' +
+      'only supports a slower page-scrape lookup (no vintage_id is available from ratings data) — ' +
+      'still pass wine_url so that scrape can happen; omitting it risks getting back the wrong wine.',
     inputSchema: ratingsInputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
@@ -44,9 +46,11 @@ server.registerTool(
       'Returns grape varieties, region, country of origin, ABV, average community rating, ' +
       'total ratings count, food pairing suggestions, and style description. ' +
       'Requires a wine_id obtainable from vivino_get_user_ratings or vivino_search_wines. ' +
-      'Also pass wine_url (the wine_url or vivino_url field from those tools) when you have ' +
-      'it — the wine_id-only lookup sometimes 404s and needs a fallback page scrape; passing ' +
-      'wine_url avoids that extra round-trip.',
+      'Vivino details live on a separate "vintage" ID, not the wine ID — when calling this after ' +
+      'vivino_search_wines, always also pass that result\'s vintage_id field for a direct, ' +
+      'reliable lookup. When calling this after vivino_get_user_ratings (no vintage_id available), ' +
+      'always pass wine_url instead so the server can scrape the real vintage ID from that page. ' +
+      'Skipping both can silently return details for the WRONG wine rather than an error.',
     inputSchema: wineDetailsInputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false },
   },

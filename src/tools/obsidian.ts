@@ -284,7 +284,9 @@ export async function syncToObsidian(args: {
 
       if (rating.wine_id > 0) {
         try {
-          details = parseWineDetails(await fetchWineDetails(rating.wine_id, rating.wine_url));
+          // Ratings never carry a vintage_id (only search results do), so this
+          // always takes the page-scrape path via wine_url.
+          details = parseWineDetails(await fetchWineDetails(rating.wine_id, null, rating.wine_url));
         } catch (e) {
           log.push(`  Warning: no Vivino details for wine ${rating.wine_id} (${rating.wine_name}): ${e instanceof Error ? e.message : e}`);
           // Exa fallback: fetch region/country/grapes from web search

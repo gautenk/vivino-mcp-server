@@ -4,7 +4,11 @@ import { VivinoReview } from '../types';
 
 export const reviewsInputSchema = {
   wine_id: z.number().int().positive()
-    .describe('Vivino wine ID. Obtain from vivino_get_user_ratings or vivino_search_wines.'),
+    .describe(
+      'Vivino wine ID — from vivino_get_user_ratings\' wine_id, or vivino_search_wines\' ' +
+      'wine_id field specifically (NOT its vintage_id; that\'s a different ID space that this ' +
+      'endpoint silently returns zero reviews for instead of erroring).'
+    ),
   page: z.number().int().min(1).default(1)
     .describe('Page number (1-based)'),
   per_page: z.number().int().min(1).max(50).default(10)

@@ -56,6 +56,9 @@ export interface VivinoReview {
 
 export interface VivinoSearchResult {
   wine_id: number;
+  // Pass this (not wine_id) to vivino_get_wine_details when you have it —
+  // details live on the vintage endpoint, not the wine endpoint.
+  vintage_id: number | null;
   name: string;
   winery: string;
   region: string | null;
