@@ -1,10 +1,18 @@
 import { z } from 'zod';
-import { fetchWineSearch } from '../client';
+import { fetchWineSearch, resolveRegionFromQuery } from '../client';
 import { VivinoSearchResult } from '../types';
 
 export const searchInputSchema = {
   query: z.string().min(1)
-    .describe('Search term: wine name, winery, region, grape variety, or style'),
+    .describe(
+      'Search term. Works well for a wine REGION or appellation (e.g. "Chianti", "Barolo", ' +
+      '"Napa Valley", "Rioja") — Vivino resolves these to a region filter, confirmed live. Does ' +
+      'NOT work as a general full-text search for a specific wine or winery name (e.g. ' +
+      '"Sassicaia", "Opus One") — Vivino has no server-side text search for those; when the query ' +
+      'doesn\'t resolve to a region, results fall back to broad/unfiltered top-rated wines and the ' +
+      'response says so explicitly (query_resolved: false). Prefer country_codes/grape_ids/' +
+      'wine_type_ids/rating filters below for anything not a region name.'
+    ),
   country_codes: z.array(z.string()).optional()
     .describe('Filter by country codes e.g. ["fr", "it", "us", "au", "es"]'),
   grape_ids: z.array(z.number().int()).optional()
@@ -70,7 +78,21 @@ export async function searchWines(args: {
   per_page: number;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
-    const raw = await fetchWineSearch(args);
+    // Resolve free text to a region filter (the only text lookup confirmed to
+    // work server-side) before searching — see resolveRegionFromQuery/
+    // fetchWineSearch in client.ts for why this is necessary at all.
+    let resolvedRegion: { id: number; name: string } | null = null;
+    try {
+      resolvedRegion = await resolveRegionFromQuery(args.query);
+    } catch {
+      // Lookup failure shouldn't block the search — fall through with no
+      // region resolved, same as a genuine no-match.
+    }
+
+    const raw = await fetchWineSearch({
+      ...args,
+      region_ids: resolvedRegion ? [resolvedRegion.id] : undefined,
+    });
     const results = parseSearchResults(raw);
     // Vivino renamed this field from records_count to records_matched; read
     // whichever the live API returns (records_count kept as a fallback for
@@ -79,8 +101,18 @@ export async function searchWines(args: {
       explore_vintage?: { records_matched?: number; records_count?: number };
     })?.explore_vintage;
     const totalMatches = explore?.records_matched ?? explore?.records_count ?? null;
+    const hasOtherFilter =
+      !!args.country_codes?.length || !!args.grape_ids?.length ||
+      args.min_rating != null || args.max_rating != null || !!args.wine_type_ids?.length;
     const result = {
       query: args.query,
+      query_resolved: resolvedRegion !== null,
+      resolved_region: resolvedRegion?.name ?? null,
+      ...(resolvedRegion === null && !hasOtherFilter ? {
+        warning: 'query did not resolve to a known region, and no other filter was given — ' +
+          'results below are Vivino\'s broad top-rated list, NOT filtered by your search text. ' +
+          'Try a region/appellation name, or use country_codes/grape_ids/wine_type_ids/rating filters instead.',
+      } : {}),
       page: args.page,
       per_page: args.per_page,
       total_matches: totalMatches,

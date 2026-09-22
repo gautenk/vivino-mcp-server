@@ -265,30 +265,59 @@ export async function fetchWineReviews(wineId: number, page: number, perPage: nu
 // All Vivino wine type IDs, used as the default "any filter" below.
 const ALL_WINE_TYPE_IDS = [1, 2, 3, 4, 7, 24];
 
+// Confirmed live (2026-09-22), via decoding the "e=" param on Vivino's own
+// /en/explore?e=<deflate+base64> result page URL: Vivino's search bar does
+// NOT do free-text search against /api/explore/explore. Typing text there
+// only resolves it against a handful of lookup endpoints — regions being the
+// one confirmed to filter server-side (?name=<query>) — and the actual
+// results page filters by the resolved entity's ID (region_ids[]=683 for
+// "Chianti", confirmed live to return real Chianti wines; a bare q=Chianti
+// is silently ignored). This resolves free text to a region filter the same
+// way; grape/country/wine-style resolution would need their own (unverified)
+// lookup shapes and is left for a later pass.
+export async function resolveRegionFromQuery(query: string): Promise<{ id: number; name: string } | null> {
+  const trimmed = query.trim();
+  if (!trimmed) return null;
+  await throttle();
+  const res = await withRetry(() =>
+    apiHttp.get('/regions', { params: { name: trimmed, language: 'en' } })
+  );
+  const regions = res.data as Array<Record<string, unknown>> | undefined;
+  const first = regions?.[0];
+  if (!first || first.id == null) return null;
+  return { id: Number(first.id), name: String(first.name ?? trimmed) };
+}
+
 export async function fetchWineSearch(params: {
-  query: string; country_codes?: string[]; grape_ids?: number[];
+  query: string; region_ids?: number[]; country_codes?: string[]; grape_ids?: number[];
   min_rating?: number; max_rating?: number; wine_type_ids?: number[];
   page?: number; per_page?: number;
 }): Promise<unknown> {
   const searchParams: Record<string, unknown> = {
-    q: params.query, per_page: params.per_page ?? 25, page: params.page ?? 1,
+    per_page: params.per_page ?? 25, page: params.page ?? 1,
   };
   const hasExplicitFilter =
+    !!params.region_ids?.length ||
     !!params.country_codes?.length ||
     !!params.grape_ids?.length ||
     params.min_rating != null ||
     params.max_rating != null ||
     !!params.wine_type_ids?.length;
 
+  // NOTE: deliberately not sending params.query as `q` — confirmed live that
+  // /api/explore/explore ignores it silently rather than filtering by it.
+  // See resolveRegionFromQuery above for the actual text-to-filter path.
+  if (params.region_ids?.length) searchParams['region_ids[]'] = params.region_ids;
   if (params.country_codes?.length) searchParams['country_codes[]'] = params.country_codes;
   if (params.grape_ids?.length) searchParams['grape_ids[]'] = params.grape_ids;
   if (params.min_rating != null) searchParams['min_rating'] = params.min_rating;
   if (params.max_rating != null) searchParams['max_rating'] = params.max_rating;
   if (params.wine_type_ids?.length) searchParams['wine_type_ids[]'] = params.wine_type_ids;
 
-  // Vivino's explore API now rejects a bare `q` with no filter
-  // ("at least one filter should be set", HTTP 400). When the caller gave none,
-  // default to "all wine types" — a filter that doesn't actually narrow results.
+  // Vivino's explore API rejects a request with no filter at all
+  // ("at least one filter should be set", HTTP 400). When the caller gave
+  // none and no region was resolved either, default to "all wine types" — a
+  // filter that doesn't actually narrow results, just satisfies the API.
   if (!hasExplicitFilter) searchParams['wine_type_ids[]'] = ALL_WINE_TYPE_IDS;
 
   await throttle();

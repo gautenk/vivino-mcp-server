@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockFetchWineSearch } = vi.hoisted(() => ({
+const { mockFetchWineSearch, mockResolveRegionFromQuery } = vi.hoisted(() => ({
   mockFetchWineSearch: vi.fn(),
+  mockResolveRegionFromQuery: vi.fn(),
 }));
 
 vi.mock('../client', () => ({
   fetchWineSearch: mockFetchWineSearch,
+  resolveRegionFromQuery: mockResolveRegionFromQuery,
 }));
 
 import { searchWines } from '../tools/search';
@@ -22,6 +24,9 @@ function baseArgs(overrides: Partial<Parameters<typeof searchWines>[0]> = {}) {
 describe('searchWines', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: query text doesn't resolve to a region — matches the prior
+    // (mock-unset) behavior for tests that don't care about this path.
+    mockResolveRegionFromQuery.mockResolvedValue(null);
   });
 
   it('reads total_matches from records_matched (the current live field)', async () => {
@@ -123,5 +128,59 @@ describe('searchWines', () => {
     mockFetchWineSearch.mockRejectedValue(new Error('Request failed with status code 400'));
     const result = await searchWines(baseArgs());
     expect(result.content[0].text).toContain('Error searching wines');
+  });
+
+  it('resolves a region query and passes region_ids through to fetchWineSearch', async () => {
+    // Confirmed live (2026-09-22): "Chianti" resolves to region id 683 via
+    // /api/regions?name=chianti, and region_ids[]=683 returns real matches
+    // (a bare q=Chianti is silently ignored by Vivino).
+    mockResolveRegionFromQuery.mockResolvedValue({ id: 683, name: 'Chianti' });
+    mockFetchWineSearch.mockResolvedValue({ explore_vintage: { records_matched: 53, matches: [] } });
+
+    const result = await searchWines(baseArgs({ query: 'Chianti' }));
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(mockResolveRegionFromQuery).toHaveBeenCalledWith('Chianti');
+    expect(mockFetchWineSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ region_ids: [683] })
+    );
+    expect(parsed.query_resolved).toBe(true);
+    expect(parsed.resolved_region).toBe('Chianti');
+    expect(parsed.warning).toBeUndefined();
+  });
+
+  it('warns when the query resolves to nothing and no other filter was given', async () => {
+    mockResolveRegionFromQuery.mockResolvedValue(null);
+    mockFetchWineSearch.mockResolvedValue({ explore_vintage: { records_matched: 999999, matches: [] } });
+
+    const result = await searchWines(baseArgs({ query: 'Sassicaia' }));
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed.query_resolved).toBe(false);
+    expect(parsed.resolved_region).toBeNull();
+    expect(parsed.warning).toMatch(/did not resolve/);
+  });
+
+  it('does not warn when the query does not resolve but another filter was given', async () => {
+    mockResolveRegionFromQuery.mockResolvedValue(null);
+    mockFetchWineSearch.mockResolvedValue({ explore_vintage: { records_matched: 100, matches: [] } });
+
+    const result = await searchWines(baseArgs({ query: 'Sassicaia', country_codes: ['it'] }));
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed.warning).toBeUndefined();
+  });
+
+  it('does not let a lookup failure block the search — falls through unresolved', async () => {
+    mockResolveRegionFromQuery.mockRejectedValue(new Error('network error'));
+    mockFetchWineSearch.mockResolvedValue({ explore_vintage: { records_matched: 5, matches: [] } });
+
+    const result = await searchWines(baseArgs());
+    const parsed = JSON.parse(result.content[0].text);
+
+    expect(parsed.query_resolved).toBe(false);
+    expect(mockFetchWineSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ region_ids: undefined })
+    );
   });
 });
