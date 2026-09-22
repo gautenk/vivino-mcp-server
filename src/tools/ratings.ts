@@ -6,9 +6,15 @@ import { MAX_PER_PAGE, DEFAULT_PER_PAGE } from '../constants';
 
 export const ratingsInputSchema = {
   page: z.number().int().min(1).default(1)
-    .describe('Page number (1-based). Each page fetches up to per_page activities from Vivino.'),
+    .describe(
+      'Cosmetic page counter echoed back in the response — Vivino itself is not paginated by ' +
+      'page number. To actually advance through results, pass the next_start_from value from ' +
+      'the previous response as start_from.'
+    ),
   per_page: z.number().int().min(1).max(MAX_PER_PAGE).default(DEFAULT_PER_PAGE)
-    .describe('Number of ratings per page (max 100)'),
+    .describe('Number of activities to request from Vivino per call (max 100). Filters ' +
+      '(min_rating/max_rating/since) are applied after fetching, so the returned count can be ' +
+      'lower than per_page even when more results exist — check has_more, not count.'),
   min_rating: z.number().min(1).max(5).optional()
     .describe('Filter: only return wines rated at or above this score (1.0–5.0)'),
   max_rating: z.number().min(1).max(5).optional()
@@ -17,6 +23,12 @@ export const ratingsInputSchema = {
     .describe('ISO 8601 date — only return ratings newer than this date (e.g. "2025-01-01")'),
   start_from: z.string().optional()
     .describe('Activity ID to paginate from (returned as next_start_from in previous response). Leave empty for first page.'),
+  wine_name_query: z.string().optional()
+    .describe(
+      'Filter: only return ratings where the wine name or winery name contains this text ' +
+      '(case-insensitive). Use this to answer "have I rated this wine?" without paginating ' +
+      'through the full history yourself.'
+    ),
 };
 
 // Extract HTML from jQuery .append('...') response
@@ -54,14 +66,20 @@ function parseVivinoDate(title: string): string {
   return new Date().toISOString();
 }
 
-export function parseActivitiesBody(body: string): { ratings: VivinoUserRating[]; lastActivityId: string | null } {
+export function parseActivitiesBody(body: string): {
+  ratings: VivinoUserRating[];
+  lastActivityId: string | null;
+  rawItemCount: number;
+} {
   const html = extractHtml(body);
   const $ = cheerio.load(html);
   const ratings: VivinoUserRating[] = [];
   let lastActivityId: string | null = null;
+  let rawItemCount = 0;
 
   $('[id^="user-activity-"]').each((_, el) => {
     const item = $(el);
+    rawItemCount++;
     const actId = (item.attr('id') ?? '').replace('user-activity-', '');
     if (actId) lastActivityId = actId;
 
@@ -116,7 +134,7 @@ export function parseActivitiesBody(body: string): { ratings: VivinoUserRating[]
     });
   });
 
-  return { ratings, lastActivityId };
+  return { ratings, lastActivityId, rawItemCount };
 }
 
 export async function getUserRatings(args: {
@@ -126,11 +144,12 @@ export async function getUserRatings(args: {
   max_rating?: number;
   since?: string;
   start_from?: string;
+  wine_name_query?: string;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     await resolveUserId(); // validates auth early
     const body = await fetchActivities(args.per_page, args.start_from);
-    let { ratings, lastActivityId } = parseActivitiesBody(body);
+    let { ratings, lastActivityId, rawItemCount } = parseActivitiesBody(body);
 
     if (args.min_rating !== undefined) ratings = ratings.filter(r => r.user_rating >= args.min_rating!);
     if (args.max_rating !== undefined) ratings = ratings.filter(r => r.user_rating <= args.max_rating!);
@@ -138,13 +157,23 @@ export async function getUserRatings(args: {
       const sinceMs = new Date(args.since).getTime();
       ratings = ratings.filter(r => new Date(r.rated_at).getTime() > sinceMs);
     }
+    if (args.wine_name_query) {
+      const needle = args.wine_name_query.toLowerCase();
+      ratings = ratings.filter(r =>
+        r.wine_name.toLowerCase().includes(needle) || r.winery_name.toLowerCase().includes(needle)
+      );
+    }
 
     const result = {
       page: args.page,
       per_page: args.per_page,
       count: ratings.length,
       next_start_from: lastActivityId,
-      has_more: ratings.length === args.per_page,
+      // has_more must reflect the RAW page (before our min/max/since filtering) —
+      // a filtered page can legitimately return fewer than per_page results while
+      // more unseen activities still exist upstream. A full raw page (rawItemCount
+      // === per_page) plus a cursor to continue from is the actual "more data" signal.
+      has_more: lastActivityId !== null && rawItemCount === args.per_page,
       ratings,
     };
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

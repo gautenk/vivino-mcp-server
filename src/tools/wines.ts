@@ -5,6 +5,13 @@ import { VivinoWineDetails, VivinoTasteProfile } from '../types';
 export const wineDetailsInputSchema = {
   wine_id: z.number().int().positive()
     .describe('Vivino wine ID (numeric). Obtain from vivino_get_user_ratings or vivino_search_wines.'),
+  wine_url: z.string().optional()
+    .describe(
+      'Optional: the wine_url (from vivino_get_user_ratings) or vivino_url (from ' +
+      'vivino_search_wines) for this wine. The direct /api/wines/{id} lookup 404s for many ' +
+      'IDs; when that happens the server falls back to scraping the real vintage ID from this ' +
+      'page and retrying against /api/vintages/{id}. Passing it up front avoids the 404 round-trip.'
+    ),
 };
 
 export const tasteProfileInputSchema = {
@@ -46,8 +53,11 @@ function normalizeTasteVal(v: unknown): number | null {
   if (v == null) return null;
   const n = Number(v);
   if (!isFinite(n)) return null;
-  // Vivino returns structure values on a 0–5 scale
-  return Math.max(0, Math.min(1, n / 5));
+  // Vivino's taste structure values are already on a 0–1 scale; only clamp
+  // the occasional stray out-of-range reading. (A prior version divided by 5
+  // here on the mistaken assumption of a 0–5 scale, which silently corrupted
+  // every taste profile — e.g. an actual 0.7 acidity displayed as 14%.)
+  return Math.max(0, Math.min(1, n));
 }
 
 export function parseTasteProfile(raw: unknown): VivinoTasteProfile {
@@ -73,10 +83,10 @@ export function parseTasteProfile(raw: unknown): VivinoTasteProfile {
 }
 
 export async function getWineDetails(
-  args: { wine_id: number }
+  args: { wine_id: number; wine_url?: string }
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
-    const raw = await fetchWineDetails(args.wine_id);
+    const raw = await fetchWineDetails(args.wine_id, args.wine_url ?? null);
     const details = parseWineDetails(raw);
     return { content: [{ type: 'text', text: JSON.stringify(details, null, 2) }] };
   } catch (err) {

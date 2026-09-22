@@ -60,8 +60,13 @@ export async function searchWines(args: {
   try {
     const raw = await fetchWineSearch(args);
     const results = parseSearchResults(raw);
-    const totalMatches = (raw as { explore_vintage?: { records_count?: number } })
-      ?.explore_vintage?.records_count ?? null;
+    // Vivino renamed this field from records_count to records_matched; read
+    // whichever the live API returns (records_count kept as a fallback for
+    // older cached responses / in case Vivino reverts).
+    const explore = (raw as {
+      explore_vintage?: { records_matched?: number; records_count?: number };
+    })?.explore_vintage;
+    const totalMatches = explore?.records_matched ?? explore?.records_count ?? null;
     const result = {
       query: args.query,
       page: args.page,

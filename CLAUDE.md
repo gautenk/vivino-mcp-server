@@ -15,7 +15,7 @@ MCP server exposing Vivino wine data to Claude Code. Solo repo, push to main.
 - **No official API.** All endpoints are reverse-engineered from vivino.com. They break without notice.
 - **Rate limits are load-bearing.** 700ms between requests, 60s on 429, 2s on 5xx. Don't reduce.
 - **Vintage endpoint** uses a different URL pattern than the wine endpoint — check `src/client.ts` before assuming.
-- **Obsidian sync state** lives at `Knowledge/Wine/.vivino-sync-state.json` in the vault. Delete to force full re-sync.
+- **Obsidian sync state** lives at `Knowledge/Wine/.sync-state.json` in the vault (and `.manifest.json` alongside it, used to detect re-rated wines). Delete both to force a full re-sync.
 
 ## Build & Test
 

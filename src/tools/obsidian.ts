@@ -251,13 +251,33 @@ export async function syncToObsidian(args: {
 
     log.push(`Processing ${newRatings.length} new ratings`);
 
+    // Load the existing manifest up front (if any) so we can tell a genuine
+    // re-rating apart from "note file already exists, nothing changed" — see
+    // the skip check below. Without this, re-rating a wine on Vivino never
+    // reached the note because the file-exists check alone always skipped it.
+    const priorManifestByWineId = new Map<number, VivinoUserRating>();
+    try {
+      if (fs.existsSync(manifestPath)) {
+        const priorManifest: VivinoUserRating[] = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        for (const r of priorManifest) priorManifestByWineId.set(r.wine_id, r);
+      }
+    } catch { /* treat as no prior manifest */ }
+
     let written = 0, skipped = 0, errors = 0;
     const today = syncStartedAt.slice(0, 10);
 
     for (const rating of newRatings) {
       const filename = ratingFilename(rating);
       const filePath = path.join(OBSIDIAN_VAULT_PATH, filename);
-      if (!args.overwrite_existing && fs.existsSync(filePath)) { skipped++; continue; }
+
+      const priorEntry = priorManifestByWineId.get(rating.wine_id);
+      const wasReRated = priorEntry != null &&
+        (priorEntry.user_rating !== rating.user_rating || priorEntry.rated_at !== rating.rated_at);
+      if (wasReRated) {
+        log.push(`  Re-rated: ${rating.wine_name} (${priorEntry!.user_rating} → ${rating.user_rating}), rewriting note`);
+      }
+
+      if (!args.overwrite_existing && !wasReRated && fs.existsSync(filePath)) { skipped++; continue; }
 
       let details: VivinoWineDetails | null = null;
       let tastes: VivinoTasteProfile | null = null;

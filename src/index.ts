@@ -21,10 +21,13 @@ server.registerTool(
     title: 'Get My Vivino Ratings',
     description:
       "Fetch the user's personal wine ratings from Vivino. Returns wine IDs, names, wineries, " +
-      'user ratings (1.0–5.0), personal tasting notes, and rated_at dates. Paginated — ' +
-      'use page/per_page to iterate through all results. Filter with min_rating/max_rating. ' +
-      'Use the since param to fetch only ratings newer than a given date. ' +
-      'Wine IDs returned here can be used with vivino_get_wine_details, ' +
+      'user ratings (1.0–5.0), personal tasting notes, and rated_at dates. Paginated by cursor — ' +
+      'check has_more and, if true, call again with start_from set to the previous response\'s ' +
+      'next_start_from (the page param is cosmetic and not sent to Vivino). ' +
+      'Filter with min_rating/max_rating, since (only ratings newer than a date), or ' +
+      'wine_name_query ("have I rated this wine?" — matches within the page(s) fetched; ' +
+      'paginate with start_from if not found and has_more is true). ' +
+      'Wine IDs (and wine_url) returned here can be used with vivino_get_wine_details, ' +
       'vivino_get_wine_taste_profile, and vivino_get_wine_reviews.',
     inputSchema: ratingsInputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false },
@@ -40,7 +43,10 @@ server.registerTool(
       'Get comprehensive information about a specific wine by its Vivino ID. ' +
       'Returns grape varieties, region, country of origin, ABV, average community rating, ' +
       'total ratings count, food pairing suggestions, and style description. ' +
-      'Requires a wine_id obtainable from vivino_get_user_ratings or vivino_search_wines.',
+      'Requires a wine_id obtainable from vivino_get_user_ratings or vivino_search_wines. ' +
+      'Also pass wine_url (the wine_url or vivino_url field from those tools) when you have ' +
+      'it — the wine_id-only lookup sometimes 404s and needs a fallback page scrape; passing ' +
+      'wine_url avoids that extra round-trip.',
     inputSchema: wineDetailsInputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false },
   },

@@ -14,7 +14,6 @@ export const RETRY_AFTER_429_MS = 60_000;
 export const RETRY_AFTER_5XX_MS = 2_000;
 
 // Cache TTLs
-export const CACHE_TTL_RATINGS_MS = 5 * 60 * 1000;       // 5 minutes
 export const CACHE_TTL_WINE_DETAILS_MS = 60 * 60 * 1000; // 60 minutes
 export const CACHE_TTL_TASTE_MS = 60 * 60 * 1000;        // 60 minutes
 

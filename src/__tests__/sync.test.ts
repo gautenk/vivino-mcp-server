@@ -131,7 +131,7 @@ describe('syncToObsidian', () => {
 
   it('happy path: writes wine notes and index', async () => {
     const ratings = [makeRating({ wine_id: 1001 }), makeRating({ wine_id: 1002, wine_name: 'Test Blanc' })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockResolvedValue(makeDetails());
     mockFetchWineTastes.mockResolvedValue(makeTastes());
 
@@ -145,7 +145,7 @@ describe('syncToObsidian', () => {
 
   it('does not crash when taste values are negative (the original bug)', async () => {
     const ratings = [makeRating({ wine_id: 2001 })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockRejectedValue(new Error('HTTP 403'));
     mockFetchWineTastes.mockResolvedValue(makeTastes({ acidity: -3.1, tannin: -2.8, intensity: -3.0 }));
 
@@ -159,7 +159,7 @@ describe('syncToObsidian', () => {
 
   it('does not crash when taste values exceed 1', async () => {
     const ratings = [makeRating({ wine_id: 2002 })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockRejectedValue(new Error('HTTP 403'));
     mockFetchWineTastes.mockResolvedValue(makeTastes({ acidity: 3.1, intensity: 2.0 }));
 
@@ -170,7 +170,7 @@ describe('syncToObsidian', () => {
 
   it('writes note without Details section when details fetch fails', async () => {
     const ratings = [makeRating({ wine_id: 3001 })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockRejectedValue(new Error('HTTP 403 Forbidden'));
     mockFetchWineTastes.mockRejectedValue(new Error('HTTP 403 Forbidden'));
 
@@ -186,7 +186,7 @@ describe('syncToObsidian', () => {
 
   it('surfaces error message in log when details fetch fails (Fix 3)', async () => {
     const ratings = [makeRating({ wine_id: 3002 })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockRejectedValue(new Error('Request failed with status code 403'));
     mockFetchWineTastes.mockRejectedValue(new Error('ignored'));
 
@@ -196,7 +196,7 @@ describe('syncToObsidian', () => {
 
   it('respects max_wines limit', async () => {
     const ratings = Array.from({ length: 8 }, (_, i) => makeRating({ wine_id: 4000 + i, wine_name: `Wine ${i}` }));
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockRejectedValue(new Error('no auth'));
     mockFetchWineTastes.mockRejectedValue(new Error('no auth'));
 
@@ -210,7 +210,7 @@ describe('syncToObsidian', () => {
 
   it('skips existing files when overwrite_existing is false', async () => {
     const ratings = [makeRating({ wine_id: 5001 })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
     mockFetchWineDetails.mockRejectedValue(new Error('no auth'));
     mockFetchWineTastes.mockRejectedValue(new Error('no auth'));
 
@@ -224,13 +224,52 @@ describe('syncToObsidian', () => {
     expect(fs.readFileSync(path.join(tmpDir, 'Test Winery Test Rouge 2020.md'), 'utf-8')).toBe('existing content');
   });
 
+  it('rewrites a note when the manifest shows the wine was re-rated (Fix: re-ratings reaching Obsidian)', async () => {
+    // Prior manifest has this wine at 3.5 stars; the fresh fetch shows 4.5 —
+    // the note file already exists, so without the fix this would be silently skipped.
+    const priorManifest = [{ ...makeRating({ wine_id: 7001, user_rating: 3.5 }) }];
+    fs.writeFileSync(path.join(tmpDir, '.manifest.json'), JSON.stringify(priorManifest), 'utf-8');
+    fs.writeFileSync(path.join(tmpDir, 'Test Winery Test Rouge 2020.md'), 'stale content', 'utf-8');
+
+    const ratings = [makeRating({ wine_id: 7001, user_rating: 4.5, rated_at: '2026-02-01T10:00:00.000Z' })];
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
+    mockFetchWineDetails.mockRejectedValue(new Error('no auth'));
+    mockFetchWineTastes.mockRejectedValue(new Error('no auth'));
+
+    const result = await syncToObsidian({ full_sync: true, overwrite_existing: false });
+    const text = result.content[0].text;
+
+    expect(text).toContain('Written: 1');
+    expect(text).toContain('Skipped: 0');
+    expect(text).toContain('Re-rated');
+    const content = fs.readFileSync(path.join(tmpDir, 'Test Winery Test Rouge 2020.md'), 'utf-8');
+    expect(content).not.toBe('stale content');
+    expect(content).toContain('4.5/5');
+  });
+
+  it('still skips an existing note when the manifest shows no rating change', async () => {
+    const priorManifest = [{ ...makeRating({ wine_id: 7002, user_rating: 4.0, rated_at: '2026-01-15T10:00:00.000Z' }) }];
+    fs.writeFileSync(path.join(tmpDir, '.manifest.json'), JSON.stringify(priorManifest), 'utf-8');
+    fs.writeFileSync(path.join(tmpDir, 'Test Winery Test Rouge 2020.md'), 'unchanged content', 'utf-8');
+
+    const ratings = [makeRating({ wine_id: 7002, user_rating: 4.0, rated_at: '2026-01-15T10:00:00.000Z' })];
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
+
+    const result = await syncToObsidian({ full_sync: true, overwrite_existing: false });
+    const text = result.content[0].text;
+
+    expect(text).toContain('Skipped: 1');
+    expect(text).not.toContain('Re-rated');
+    expect(fs.readFileSync(path.join(tmpDir, 'Test Winery Test Rouge 2020.md'), 'utf-8')).toBe('unchanged content');
+  });
+
   it('incremental sync skips ratings older than last sync date', async () => {
     // Write a sync state that is newer than the rating date
     const syncState = { last_sync_at: '2026-06-01T00:00:00.000Z', last_activity_id: null, total_wines_synced: 0 };
     fs.writeFileSync(path.join(tmpDir, '.sync-state.json'), JSON.stringify(syncState), 'utf-8');
 
     const ratings = [makeRating({ wine_id: 6001, rated_at: '2026-01-15T10:00:00.000Z' })];
-    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings));
+    mockFetchActivities.mockResolvedValueOnce(makeActivityHtml(ratings)).mockResolvedValue(makeActivityHtml([]));
 
     const result = await syncToObsidian({ full_sync: false, overwrite_existing: false });
     const text = result.content[0].text;

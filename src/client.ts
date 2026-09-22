@@ -131,7 +131,15 @@ export async function fetchCsrfToken(): Promise<string> {
   );
   const html: string = res.data;
   const match = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/);
-  if (!match) throw new Error('Could not extract CSRF token from Vivino profile page. Check VIVINO_SESSION_COOKIE.');
+  if (!match) {
+    // Vivino serves a 200 with its normal chrome (including a CSRF meta tag) even for a
+    // profile page that doesn't exist, so a typo'd VIVINO_USERNAME silently yields a token
+    // here and only fails confusingly later. Point at both likely causes.
+    throw new Error(
+      'Could not extract CSRF token from Vivino profile page. ' +
+      'Check that VIVINO_USERNAME is correct and that VIVINO_SESSION_COOKIE is still valid.'
+    );
+  }
   cachedCsrf = match[1];
   return cachedCsrf;
 }
@@ -187,10 +195,13 @@ const apiHttp = axios.create({
 // Scrape the real Vivino vintage ID from the wine detail page.
 // The URL's /w/{id} is a routing ID; the actual API vintage ID lives in the page HTML
 // as `"vintage":{"id":<N>}`.
+// wineUrl may be an absolute URL (as returned by vivino_search_wines' vivino_url) or a
+// relative path (as returned by vivino_get_user_ratings' wine_url) — handle both.
 async function scrapeRealVintageId(urlWineId: number, wineUrl: string): Promise<number> {
   return getCached(`vintage-page:${urlWineId}`, async () => {
+    const fullUrl = /^https?:\/\//i.test(wineUrl) ? wineUrl : `${VIVINO_BASE_URL}${wineUrl}`;
     const res = await withRetry(() =>
-      axios.get(`${VIVINO_BASE_URL}${wineUrl}`, { headers: baseHeaders(), timeout: 15_000 })
+      axios.get(fullUrl, { headers: baseHeaders(), timeout: 15_000 })
     );
     const html: string = res.data;
     const m = html.match(/"vintage":\{"id":(\d+)/);
@@ -231,6 +242,9 @@ export async function fetchWineReviews(wineId: number, page: number, perPage: nu
   return res.data;
 }
 
+// All Vivino wine type IDs, used as the default "any filter" below.
+const ALL_WINE_TYPE_IDS = [1, 2, 3, 4, 7, 24];
+
 export async function fetchWineSearch(params: {
   query: string; country_codes?: string[]; grape_ids?: number[];
   min_rating?: number; max_rating?: number; wine_type_ids?: number[];
@@ -239,11 +253,24 @@ export async function fetchWineSearch(params: {
   const searchParams: Record<string, unknown> = {
     q: params.query, per_page: params.per_page ?? 25, page: params.page ?? 1,
   };
+  const hasExplicitFilter =
+    !!params.country_codes?.length ||
+    !!params.grape_ids?.length ||
+    params.min_rating != null ||
+    params.max_rating != null ||
+    !!params.wine_type_ids?.length;
+
   if (params.country_codes?.length) searchParams['country_codes[]'] = params.country_codes;
   if (params.grape_ids?.length) searchParams['grape_ids[]'] = params.grape_ids;
   if (params.min_rating != null) searchParams['min_rating'] = params.min_rating;
   if (params.max_rating != null) searchParams['max_rating'] = params.max_rating;
   if (params.wine_type_ids?.length) searchParams['wine_type_ids[]'] = params.wine_type_ids;
+
+  // Vivino's explore API now rejects a bare `q` with no filter
+  // ("at least one filter should be set", HTTP 400). When the caller gave none,
+  // default to "all wine types" — a filter that doesn't actually narrow results.
+  if (!hasExplicitFilter) searchParams['wine_type_ids[]'] = ALL_WINE_TYPE_IDS;
+
   await throttle();
   const res = await withRetry(() => apiHttp.get('/explore/explore', { params: searchParams }));
   return res.data;

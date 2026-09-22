@@ -4,7 +4,7 @@
 
 ![MCP](https://img.shields.io/badge/protocol-MCP-6E56CF?style=flat-square)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
-![Node 18+](https://img.shields.io/badge/Node-18%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Node 20+](https://img.shields.io/badge/Node-20%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 An MCP (Model Context Protocol) server that brings your Vivino wine ratings into Claude and other AI applications. Access personal wine data, search the Vivino catalog, read structured taste profiles, and sync your ratings to Obsidian, all from a chat.
@@ -20,7 +20,7 @@ An MCP (Model Context Protocol) server that brings your Vivino wine ratings into
 
 ## Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 20+ and npm
 - A Vivino account (vivino.com)
 - Optionally: Obsidian vault for syncing ratings
 - Optionally: Exa API key for web-based wine enrichment
@@ -28,7 +28,7 @@ An MCP (Model Context Protocol) server that brings your Vivino wine ratings into
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/vivino-mcp-server.git
+git clone https://github.com/gautenk/vivino-mcp-server.git
 cd vivino-mcp-server
 npm install
 npm run build
@@ -82,23 +82,26 @@ cp .env.example .env
 
 ### With Claude Code
 
-Add to your Claude Code `.claude/launch.json`:
+Register the server with the `claude mcp add` CLI command:
+
+```bash
+claude mcp add vivino-mcp -- node /path/to/vivino-mcp-server/dist/index.js
+```
+
+Or add it directly to your project's `.mcp.json`:
 
 ```json
 {
-  "version": "0.0.1",
-  "configurations": [
-    {
-      "name": "vivino-mcp",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["/path/to/vivino-mcp-server/dist/index.js"],
-      "port": 0
+  "mcpServers": {
+    "vivino-mcp": {
+      "command": "node",
+      "args": ["/path/to/vivino-mcp-server/dist/index.js"]
     }
-  ]
+  }
 }
 ```
 
-Then use `/start vivino-mcp` in Claude Code to launch the MCP and access the tools.
+The tools are then available to Claude Code automatically — no separate launch step needed.
 
 ### Standalone with MCP Client
 

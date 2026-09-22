@@ -5,8 +5,8 @@
   "type": "commonjs",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc --noCheck",
-    "build:watch": "tsc --noCheck --watch",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
     "start": "node dist/index.js",
     "dev": "tsc && node dist/index.js",
     "test": "vitest run",
@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.8.0",
+    "typescript": "~5.4.5",
     "vitest": "^4.1.6"
   }
 }
