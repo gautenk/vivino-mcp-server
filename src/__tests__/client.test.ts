@@ -13,7 +13,7 @@ vi.mock('axios', () => ({
   },
 }));
 
-import { fetchWineSearch } from '../client';
+import { fetchWineSearch, resolveRegionFromQuery } from '../client';
 
 describe('fetchWineSearch', () => {
   beforeEach(() => {
@@ -39,5 +39,51 @@ describe('fetchWineSearch', () => {
     await fetchWineSearch({ query: 'barolo', wine_type_ids: [1] });
     const [, config] = mockGet.mock.calls[0];
     expect(config.params['wine_type_ids[]']).toEqual([1]);
+  });
+});
+
+describe('resolveRegionFromQuery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('unwraps the { regions: [...] } response shape (not a bare array)', async () => {
+    mockGet.mockResolvedValue({
+      data: { regions: [{ id: 683, name: 'Chianti', parent_id: 394 }] },
+    });
+    const result = await resolveRegionFromQuery('Chianti');
+    expect(result).toEqual({ id: 683, name: 'Chianti' });
+  });
+
+  it('prefers an exact case-insensitive name match over the API\'s own result order', async () => {
+    // Confirmed live: searching "chianti" returns 11 results with the real
+    // "Chianti" region (id 683) listed LAST, after every sub-region
+    // (Chianti Rùfina, Chianti Classico, ...). Taking regions[0] would
+    // silently resolve to the wrong, narrower region.
+    mockGet.mockResolvedValue({
+      data: {
+        regions: [
+          { id: 962, name: 'Chianti Rùfina', parent_id: 683 },
+          { id: 1798, name: 'Chianti Classico', parent_id: 683 },
+          { id: 683, name: 'Chianti', parent_id: 394 },
+        ],
+      },
+    });
+    const result = await resolveRegionFromQuery('chianti'); // different case on purpose
+    expect(result).toEqual({ id: 683, name: 'Chianti' });
+  });
+
+  it('falls back to the first result when no exact match exists', async () => {
+    mockGet.mockResolvedValue({
+      data: { regions: [{ id: 1798, name: 'Chianti Classico', parent_id: 683 }] },
+    });
+    const result = await resolveRegionFromQuery('chianti classic'); // no exact match
+    expect(result).toEqual({ id: 1798, name: 'Chianti Classico' });
+  });
+
+  it('returns null when nothing matches', async () => {
+    mockGet.mockResolvedValue({ data: { regions: [] } });
+    const result = await resolveRegionFromQuery('Sassicaia');
+    expect(result).toBeNull();
   });
 });

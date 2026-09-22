@@ -282,10 +282,19 @@ export async function resolveRegionFromQuery(query: string): Promise<{ id: numbe
   const res = await withRetry(() =>
     apiHttp.get('/regions', { params: { name: trimmed, language: 'en' } })
   );
-  const regions = res.data as Array<Record<string, unknown>> | undefined;
-  const first = regions?.[0];
-  if (!first || first.id == null) return null;
-  return { id: Number(first.id), name: String(first.name ?? trimmed) };
+  // Confirmed live (2026-09-22): the response is { regions: [...] }, not a
+  // bare array. Also confirmed: results are NOT ranked with the best match
+  // first — searching "chianti" returned 11 sub-regions/related entries
+  // (Chianti Rùfina, Chianti Classico, Vin Santo del Chianti, ...) with the
+  // actual "Chianti" region dead LAST. Prefer an exact case-insensitive name
+  // match; only fall back to the API's own first result when nothing matches
+  // exactly (a genuinely ambiguous/fuzzy query).
+  const regions = (res.data as { regions?: Array<Record<string, unknown>> } | undefined)?.regions;
+  if (!regions?.length) return null;
+  const exact = regions.find(r => String(r.name ?? '').trim().toLowerCase() === trimmed.toLowerCase());
+  const chosen = exact ?? regions[0];
+  if (chosen.id == null) return null;
+  return { id: Number(chosen.id), name: String(chosen.name ?? trimmed) };
 }
 
 export async function fetchWineSearch(params: {
