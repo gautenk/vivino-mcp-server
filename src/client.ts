@@ -213,11 +213,19 @@ async function scrapeRealVintageId(urlWineId: number, wineUrl: string): Promise<
 export async function fetchWineDetails(wineId: number, wineUrl?: string | null): Promise<unknown> {
   return getCached(`wine:${wineId}`, async () => {
     try {
-      const res = await withRetry(() => apiHttp.get(`/wines/${wineId}`));
+      // /api/wines/{id} is confirmed dead on Vivino's side as of 2026-09 — it
+      // 404s unconditionally, even for a wine ID pulled straight out of a live
+      // explore response. The IDs this server actually deals in (from
+      // getUserRatings' /w/{id} URLs, and now from searchWines below) are
+      // vintage IDs, and /api/vintages/{id} is the endpoint that actually
+      // serves wine detail data. Go straight there.
+      const res = await withRetry(() => apiHttp.get(`/vintages/${wineId}`));
       return res.data;
     } catch (err) {
       const e = err as AxiosError;
       if (e.response?.status === 404 && wineUrl) {
+        // Only reached if the caller passed an ID that isn't a valid vintage
+        // ID after all (e.g. stale data) — scrape the real one from the page.
         const realVintageId = await scrapeRealVintageId(wineId, wineUrl);
         const res = await withRetry(() => apiHttp.get(`/vintages/${realVintageId}`));
         return res.data;

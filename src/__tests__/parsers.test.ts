@@ -20,11 +20,17 @@ describe('parseTasteProfile', () => {
     expect(result.structure.tannin).toBe(0);
   });
 
-  it('clamps values above 1 to 1', () => {
+  it('scales down values on a ~1-5 reading (confirmed live against Vivino) instead of clamping to 1', () => {
     const raw = { tastes: { structure: { acidity: 3.1, intensity: 1.5 }, flavor: [] } };
     const result = parseTasteProfile(raw);
+    expect(result.structure.acidity).toBeCloseTo(0.62);
+    expect(result.structure.intensity).toBeCloseTo(0.3);
+  });
+
+  it('still clamps an out-of-range reading above 5 to 1', () => {
+    const raw = { tastes: { structure: { acidity: 12 }, flavor: [] } };
+    const result = parseTasteProfile(raw);
     expect(result.structure.acidity).toBe(1);
-    expect(result.structure.intensity).toBe(1);
   });
 
   it('keeps null fields as null', () => {

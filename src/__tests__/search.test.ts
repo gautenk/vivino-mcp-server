@@ -66,6 +66,7 @@ describe('searchWines', () => {
         records_matched: 1,
         matches: [{
           vintage: {
+            id: 99001,
             wine: {
               id: 42,
               name: 'Test Barolo',
@@ -83,14 +84,34 @@ describe('searchWines', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.results).toHaveLength(1);
     expect(parsed.results[0]).toMatchObject({
-      wine_id: 42,
+      // wine_id is the VINTAGE id (99001), not wine.id (42) — confirmed live
+      // that /api/wines/{wine.id} 404s unconditionally while
+      // /api/vintages/{vintage.id} is the endpoint that actually works.
+      wine_id: 99001,
       name: 'Test Barolo',
       winery: 'Test Winery',
       region: 'Piedmont',
       country: 'Italy',
       avg_rating: 4.3,
-      vivino_url: 'https://www.vivino.com/wines/test-barolo',
+      vivino_url: 'https://www.vivino.com/test-barolo/w/99001',
     });
+  });
+
+  it('skips a match with no vintage id rather than emitting a broken wine_id', async () => {
+    mockFetchWineSearch.mockResolvedValue({
+      explore_vintage: {
+        records_matched: 1,
+        matches: [{
+          vintage: {
+            wine: { id: 42, name: 'No Vintage Id', seo_name: 'x', winery: {}, region: null },
+            statistics: {},
+          },
+        }],
+      },
+    });
+    const result = await searchWines(baseArgs());
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.results).toHaveLength(0);
   });
 
   it('does not throw on a bare-query error response and reports it as text', async () => {

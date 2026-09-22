@@ -32,9 +32,14 @@ function parseSearchResults(raw: unknown): VivinoSearchResult[] {
     const region = wine?.region as Record<string, unknown> | undefined;
     const country = region?.country as Record<string, unknown> | undefined;
     const stats = vintage?.statistics as Record<string, unknown> | undefined;
-    if (!wine) return [];
+    if (!wine || vintage?.id == null) return [];
     return [{
-      wine_id: Number(wine.id),
+      // Deliberately the VINTAGE id, not wine.id: confirmed live that
+      // /api/wines/{wine.id} 404s unconditionally on Vivino's side, while
+      // /api/vintages/{vintage.id} (which vivino_get_wine_details/taste_profile/
+      // reviews all key off) works. Using vintage.id here means results from
+      // this tool plug straight into those without a wine_url round-trip.
+      wine_id: Number(vintage.id),
       name: String(wine.name ?? ''),
       winery: String(winery?.name ?? ''),
       region: region ? String(region.name) : null,
@@ -42,7 +47,12 @@ function parseSearchResults(raw: unknown): VivinoSearchResult[] {
       avg_rating: stats?.ratings_average != null ? Number(stats.ratings_average) : null,
       ratings_count: stats?.ratings_count != null ? Number(stats.ratings_count) : null,
       style_id: wine.style_id != null ? Number(wine.style_id) : null,
-      vivino_url: wine.seo_name ? `https://www.vivino.com/wines/${wine.seo_name}` : null,
+      // Same /{wine-seo}/w/{vintage-id} shape as the URLs getUserRatings
+      // already parses IDs out of — the one URL format confirmed to work
+      // with the vintage-page scrape fallback.
+      vivino_url: wine.seo_name
+        ? `https://www.vivino.com/${wine.seo_name}/w/${vintage.id}`
+        : null,
     }];
   });
 }
