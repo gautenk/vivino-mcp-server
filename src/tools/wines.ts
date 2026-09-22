@@ -49,15 +49,18 @@ export function parseWineDetails(raw: unknown): VivinoWineDetails {
   };
 }
 
+// Vivino has returned structure values on at least two different scales in the
+// wild: 0–1 floats directly usable as-is, and ~1–5 floats that need dividing
+// down. Rather than hard-coding one assumption (which has now broken this
+// tool twice — the reverse-engineered API isn't documented and can vary by
+// wine/endpoint), detect the scale per-value: anything already <= 1 is left
+// alone, anything above is treated as a 1–5 reading and divided by 5.
 function normalizeTasteVal(v: unknown): number | null {
   if (v == null) return null;
   const n = Number(v);
   if (!isFinite(n)) return null;
-  // Vivino's taste structure values are already on a 0–1 scale; only clamp
-  // the occasional stray out-of-range reading. (A prior version divided by 5
-  // here on the mistaken assumption of a 0–5 scale, which silently corrupted
-  // every taste profile — e.g. an actual 0.7 acidity displayed as 14%.)
-  return Math.max(0, Math.min(1, n));
+  const scaled = n > 1 ? n / 5 : n;
+  return Math.max(0, Math.min(1, scaled));
 }
 
 export function parseTasteProfile(raw: unknown): VivinoTasteProfile {
