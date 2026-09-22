@@ -42,8 +42,14 @@ export function parseWineDetails(raw: unknown): VivinoWineDetails {
   const country = region?.country as Record<string, unknown> | undefined;
   const stats = (vintageObj?.statistics ?? wine.statistics) as Record<string, unknown> | undefined;
   const grapes = (wine.grapes as Array<Record<string, unknown>>) ?? [];
-  const food = (wine.food as Array<Record<string, unknown>>) ?? [];
+  // Confirmed live (2026-09-22): the field is "foods" (plural), not "food".
+  const food = (wine.foods as Array<Record<string, unknown>>) ?? [];
   const style = wine.style as Record<string, unknown> | undefined;
+  // Confirmed live: the label image lives on the VINTAGE object, not nested
+  // in wine — wine.image/wine.label_image_url don't exist on this response.
+  const vintageImage = vintageObj?.image as Record<string, unknown> | undefined;
+  const imageVariations = vintageImage?.variations as Record<string, unknown> | undefined;
+  const rawImageUrl = (vintageImage?.location ?? imageVariations?.bottle_medium) as string | undefined;
 
   return {
     wine_id: Number(wine.id),
@@ -57,8 +63,15 @@ export function parseWineDetails(raw: unknown): VivinoWineDetails {
     ratings_count: stats?.ratings_count != null ? Number(stats.ratings_count) : null,
     style_description: style?.description ? String(style.description) : null,
     food_pairings: food.map(f => String(f.name ?? '')).filter(Boolean),
-    image_url: ((wine.label_image_url ?? (wine.image as Record<string, unknown> | undefined)?.location) as string | undefined) ?? null,
-    vivino_url: wine.seo_name ? `https://www.vivino.com/wines/${wine.seo_name}` : null,
+    // Vivino's image URLs come back protocol-relative ("//images.vivino.com/...");
+    // normalize to https so this is directly usable.
+    image_url: rawImageUrl ? (rawImageUrl.startsWith('//') ? `https:${rawImageUrl}` : rawImageUrl) : null,
+    // /wines/{seo_name} alone 404s (confirmed live — it has no vintage context).
+    // Use the same /{seo_name}/w/{vintage_id} shape search results and rating
+    // URLs use, when we know the vintage id.
+    vivino_url: wine.seo_name && vintageObj?.id != null
+      ? `https://www.vivino.com/${wine.seo_name}/w/${vintageObj.id}`
+      : null,
   };
 }
 

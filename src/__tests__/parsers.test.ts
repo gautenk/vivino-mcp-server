@@ -80,17 +80,24 @@ describe('parseTasteProfile', () => {
 
 describe('parseWineDetails', () => {
   const validRaw = {
-    wine: {
-      id: 12345,
-      name: 'Cabernet Sauvignon',
-      winery: { name: 'Chateau Test' },
-      region: { name: 'Napa Valley', country: { name: 'United States' } },
-      grapes: [{ name: 'Cabernet Sauvignon' }, { name: 'Merlot' }],
-      alcohol: 14.5,
-      statistics: { ratings_average: 4.2, ratings_count: 1500 },
-      food: [{ name: 'beef' }, { name: 'lamb' }],
-      style: { description: 'Full-bodied red with dark fruit' },
-      seo_name: 'chateau-test-cabernet-sauvignon',
+    vintage: {
+      id: 99001,
+      // Confirmed live (2026-09-22): the label image is a protocol-relative
+      // URL on the vintage object, not nested under wine.
+      image: { location: '//images.vivino.com/thumbs/test_pl.png' },
+      wine: {
+        id: 12345,
+        name: 'Cabernet Sauvignon',
+        winery: { name: 'Chateau Test' },
+        region: { name: 'Napa Valley', country: { name: 'United States' } },
+        grapes: [{ name: 'Cabernet Sauvignon' }, { name: 'Merlot' }],
+        alcohol: 14.5,
+        statistics: { ratings_average: 4.2, ratings_count: 1500 },
+        // Confirmed live: the field is "foods" (plural), not "food".
+        foods: [{ name: 'beef' }, { name: 'lamb' }],
+        style: { description: 'Full-bodied red with dark fruit' },
+        seo_name: 'chateau-test-cabernet-sauvignon',
+      },
     },
   };
 
@@ -107,7 +114,8 @@ describe('parseWineDetails', () => {
     expect(result.ratings_count).toBe(1500);
     expect(result.food_pairings).toEqual(['beef', 'lamb']);
     expect(result.style_description).toBe('Full-bodied red with dark fruit');
-    expect(result.vivino_url).toBe('https://www.vivino.com/wines/chateau-test-cabernet-sauvignon');
+    expect(result.image_url).toBe('https://images.vivino.com/thumbs/test_pl.png');
+    expect(result.vivino_url).toBe('https://www.vivino.com/chateau-test-cabernet-sauvignon/w/99001');
   });
 
   it('returns nulls and empty arrays for missing optional fields', () => {
