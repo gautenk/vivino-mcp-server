@@ -47,6 +47,11 @@ function extractHtml(body: string): string {
     .replace(/\\\\/g, '\\');
 }
 
+// A rating with its source activity ID attached — used internally to compute
+// a correct pagination cursor even when we truncate to per_page ourselves
+// (see getUserRatings). Never exposed to the caller.
+type RatingWithActivityId = VivinoUserRating & { _activityId: string };
+
 // Parse "Sat, Mar 28th at 17:26:00 UTC" → ISO string.
 // Vivino titles omit the year, so we try the current year and walk back until the date is not in the future.
 function parseVivinoDate(title: string): string {
@@ -67,13 +72,13 @@ function parseVivinoDate(title: string): string {
 }
 
 export function parseActivitiesBody(body: string): {
-  ratings: VivinoUserRating[];
+  ratings: RatingWithActivityId[];
   lastActivityId: string | null;
   rawItemCount: number;
 } {
   const html = extractHtml(body);
   const $ = cheerio.load(html);
-  const ratings: VivinoUserRating[] = [];
+  const ratings: RatingWithActivityId[] = [];
   let lastActivityId: string | null = null;
   let rawItemCount = 0;
 
@@ -110,10 +115,18 @@ export function parseActivitiesBody(body: string): {
     const wineIdMatch = wineUrl?.match(/\/w\/(\d+)/);
     const wineId = wineIdMatch ? parseInt(wineIdMatch[1]) : 0;
 
-    // Vintage: first 4-digit year in text
+    // Vintage: first 4-digit year in text, sanity-bounded to a plausible
+    // wine year (1900..currentYear+1). Without a bound this regex can grab
+    // an unrelated 4-digit number elsewhere in the card's text (e.g. an NV
+    // wine showed vintage 2051) — out-of-range matches are treated as NV
+    // (no vintage) instead of returned as a bogus year.
     const fullText = item.text();
+    const currentYear = new Date().getFullYear();
     const vintageMatch = fullText.match(/\b(19|20)\d{2}\b/);
-    const vintage = vintageMatch ? parseInt(vintageMatch[0]) : null;
+    const vintageCandidate = vintageMatch ? parseInt(vintageMatch[0]) : null;
+    const vintage = vintageCandidate != null && vintageCandidate >= 1900 && vintageCandidate <= currentYear + 1
+      ? vintageCandidate
+      : null;
 
     // Rated at: from the time link's title attribute
     const timeTitle = item.find('a[title]').first().attr('title') ?? '';
@@ -131,6 +144,7 @@ export function parseActivitiesBody(body: string): {
       user_notes: noteText,
       rated_at: ratedAt,
       wine_url: wineUrl,
+      _activityId: actId,
     });
   });
 
@@ -164,23 +178,29 @@ export async function getUserRatings(args: {
       );
     }
 
+    // Vivino's activities endpoint doesn't reliably honor the requested limit —
+    // live testing showed it return a fixed ~10-item batch regardless of
+    // per_page. Truncate to per_page ourselves, but the pagination cursor has
+    // to move with the truncation: if we hand back fewer items than we fetched,
+    // next_start_from must point at the LAST ITEM WE ACTUALLY RETURNED, not the
+    // raw batch's last item — otherwise the next call would silently skip every
+    // activity between the two.
+    const truncated = ratings.length > args.per_page;
+    if (truncated) ratings = ratings.slice(0, args.per_page);
+
+    const nextStartFrom = truncated
+      ? ratings[ratings.length - 1]._activityId
+      : lastActivityId;
+    const hasMore = truncated || (lastActivityId !== null && rawItemCount > 0);
+
     const result = {
       page: args.page,
       per_page: args.per_page,
       count: ratings.length,
-      next_start_from: lastActivityId,
-      // has_more must reflect the RAW page (before our min/max/since filtering) —
-      // a filtered page can legitimately return fewer than per_page results while
-      // more unseen activities still exist upstream. Previously this compared
-      // rawItemCount to args.per_page, but live testing showed Vivino's activities
-      // endpoint doesn't reliably honor the requested limit — it can return a
-      // different batch size regardless of what was asked for, which made that
-      // comparison false-negative (has_more: false while a valid next_start_from
-      // cursor was still present). A present cursor plus at least one item on this
-      // page is the only signal actually confirmed reliable; end of history shows
-      // up as an empty page (rawItemCount === 0) instead.
-      has_more: lastActivityId !== null && rawItemCount > 0,
-      ratings,
+      next_start_from: nextStartFrom,
+      has_more: hasMore,
+      // Strip the internal cursor field before returning to the caller.
+      ratings: ratings.map(({ _activityId, ...r }) => r),
     };
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   } catch (err) {

@@ -71,6 +71,45 @@ describe('getUserRatings', () => {
     expect(parsed.has_more).toBe(false);
   });
 
+  it('truncates to per_page when Vivino ignores the requested limit, without skipping items', async () => {
+    // Live testing (2026-09-22) showed Vivino's activities endpoint can return
+    // a fixed ~10-item batch regardless of the per_page/limit we ask for.
+    const items = Array.from({ length: 10 }, (_, i) => ({
+      id: i + 1, rating: 4, wine: `Wine ${i + 1}`, winery: `Winery ${i + 1}`,
+    }));
+    mockFetchActivities.mockResolvedValue(activityHtml(items));
+    const result = await getUserRatings({ page: 1, per_page: 5 });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.count).toBe(5);
+    expect(parsed.ratings).toHaveLength(5);
+    expect(parsed.ratings[4].wine_name).toBe('Wine 5');
+    expect(parsed.has_more).toBe(true);
+    // Cursor must point at the LAST RETURNED item (#5), not the raw batch's
+    // last item (#10) — otherwise the next call would skip activities 6-9.
+    expect(parsed.next_start_from).toBe('act5');
+    // The internal cursor field must never leak into the response.
+    expect(parsed.ratings[0]).not.toHaveProperty('_activityId');
+  });
+
+  it('rejects an out-of-range vintage year instead of returning a bogus one', () => {
+    const html = `$("#activities").append('
+      <div id="user-activity-act1">
+        <span class="icon-400-pct"></span>
+        <div class="activity-wine-card">
+          <a href="/en/wines/w/1">wine</a>
+          <a>Ruggeri</a>
+          <a>Angelino Prosecco</a>
+          <a>Region</a>
+          <a>Country</a>
+        </div>
+        <a title="Sat, Jan 15th at 10:00:00 UTC" href="/activities/1">1 hour ago</a>
+        <span>2051 ratings</span>
+      </div>');`;
+    const { ratings } = parseActivitiesBody(html);
+    expect(ratings).toHaveLength(1);
+    expect(ratings[0].vintage).toBeNull();
+  });
+
   it('has_more is true when a filtered result set is small but the raw page was full', async () => {
     // 25 raw activities (== per_page) but only 1 survives the min_rating filter —
     // the old bug reported has_more:false here because it checked filtered count.

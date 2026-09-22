@@ -232,7 +232,7 @@ export async function syncToObsidian(args: {
       const { ratings: page, lastActivityId } = parseActivitiesBody(body);
 
       let newInBatch = 0;
-      for (const r of page) {
+      for (const { _activityId, ...r } of page) {
         if (sinceDate && new Date(r.rated_at) <= sinceDate) { reachedOld = true; break; }
         if (seenWineIds.has(r.wine_id)) continue;
         seenWineIds.add(r.wine_id);
