@@ -1,6 +1,6 @@
 # Testplan: cellar-liste og ekte `per_page`
 
-Status: vedtatt (grill-sesjon 2026-09-25). Ingen implementering er startet.
+Status: vedtatt (grill-sesjon 2026-09-25). Live-sondering er gjennomført (se «Funn»). Bare cookie-fiksen er implementert.
 
 ## Beslutninger
 
@@ -31,7 +31,7 @@ Status: vedtatt (grill-sesjon 2026-09-25). Ingen implementering er startet.
 | E2 | Fixtures fra HAR anonymiseres før commit. Struktur, feltnavn, vin-ID og navn beholdes. Pris, sted og notater erstattes med syntetiske verdier. |
 | F2 | Hovedbeviset for A: historikken hentes fullt med `per_page: 7` og `per_page: 100`. Mengden `(wine_id, rated_at)` må være identisk, uten duplikater. |
 | F3 | Kjelleren verifiseres automatisk mot HAR (samme ID-er og antall) og manuelt av brukeren mot appen. |
-| G1 | Sky-miljøet har `www.vivino.com` i allowlisten og `VIVINO_*` som miljøvariabler (bekreftet: `/api/session` svarer 200). |
+| G1 | Sky-miljøet har `www.vivino.com` i allowlisten og `VIVINO_*` som miljøvariabler. Bekreftet innlogget (`is_signed_in: true`) etter cookie-fiksen. |
 
 ## Rekkefølge
 
@@ -106,7 +106,62 @@ Hvis kjelleren er på én Vivino-side eller mindre, dekkes intern paginering bar
 - [ ] Ingen personlige data i committede fixtures (pris, sted og notater er syntetiske)
 - [ ] CLAUDE.md er oppdatert med det nye cellar-endepunktet under «Known Pitfalls»
 
+## Funn fra live-sondering (2026-09-25, sesjon 2)
+
+### Innlogging (G1)
+- Årsaken til `is_signed_in: false` var formatet: `VIVINO_SESSION_COOKIE` i sky-miljøet inneholder bare verdien, uten `navn=`, og klienten sendte den rått i `Cookie`-headeren. Vivino ignorerer en navnløs cookie.
+- **Fikset** i `src/client.ts` (`sessionCookieHeader()`): en verdi uten `=` sendes som `_ruby-web_session=<verdi>`. En full header sendes uendret. Med fiksen gir `/api/session` `is_signed_in: true`. Enhetstester er lagt til i `client.test.ts`.
+- `/api/session` → `user_session.id` = `6702495`, som stemmer med `VIVINO_USER_ID` i miljøet. CLAUDE.md oppgir `15328411`. Dette må avklares med brukeren.
+
+### L-1: størrelsesparameter i aktivitetsstrømmen
+`/users/6702495/activities` ble kalt med `{}`, `limit=50`, `per_page=50`, `count=50` og alle tre samtidig. Alle svarene var byte-identiske (80 468 byte) og ga **10 aktiviteter**. Vivino ignorerer alle størrelsesparametere. **Konsekvens:** A implementeres som en løkke (A2), ikke som en parameterendring.
+
+### Kjellerkilde (B2): tre kandidater evaluert
+`/en/cellars` gir 302 til `/en/cellars/144153`. Løs `cellar_id` via denne videresendingen, ikke via bruker-ID-en. `__PRELOADED_STATE__` og `data-ssr-props` inneholder **ikke** kjellerdata. Siden er en **Inertia.js**-side (`component: "cellars/show"`).
+
+| Kilde | Hvordan | Vurdering |
+|---|---|---|
+| **1. Inertia-JSON** (anbefalt primærkilde) | `GET /en/cellars/{id}?per_page=N&page=P` med `X-Inertia: true`, `X-Requested-With: XMLHttpRequest` og `X-Inertia-Version: <v>` gir `application/json`. Samme objekt ligger i `data-page`-attributtet i HTML-en. | Strukturert og komplett for vin og årgang. `per_page=50` ga alle 22 i ett kall. Feil eller manglende versjon gir **409** med `X-Inertia-Location` (også uten cookie). Hent derfor HTML én gang, les `version` og side 1 fra `data-page`, og bruk JSON for resten. Ved 409 hentes versjonen på nytt. |
+| **2. CSV-eksport** (anbefalt supplement) | `GET /cellars/{id}/export` → `text/csv`, `attachment; filename="<seo_name>-cellar.csv"`. Samme kall som «Export»-knappen (`feature_flag cellar_export: true`). | Én rad **per flaske** (28), 16 kolonner. Har tre felt som JSON mangler: `Cellar Location`, `Tag` og `Purchase Location`. Mangler `wine_id`, drikkevindu, ratinger og region. Datoformatet er `DD-MM-YYYY`. Hele kjelleren kommer i ett kall uten paginering. |
+| 3. HTML-kort (forkastet) | cheerio på `[data-testid=cellar-list] > li` | Fungerer (sum `quantity` = 28), men gir færre felt enn JSON. Klassenavnene har hash-suffiks, og `cellar_v2` vil sannsynligvis bryte parseren. Brukes ikke. |
+
+**Paginering:** `?page=N` gir 20 per side som standard. Side 3 er tom (slutt-signal). `per_page=50` gir alt, men den øvre grensen er ikke testet. `page=2&per_page=50` gir 0, altså vanlig `page` × `per_page`. Svaret har `total_count` (22), så løkken kan stoppe presist.
+
+#### Inertia-JSON: feltkart (`props.entries[]`)
+| C1-felt | Sti | Merknad |
+|---|---|---|
+| `wine_id` | `vintage.wine.id` | |
+| (vintage-ID) | `vintage.id` | Nøkkelen for kobling mot CSV-ens `Link to wine` = `https://www.vivino.com/wines/{vintage.id}` (28/28 treff) |
+| `wine_name` | `vintage.wine.name` | Uten årgang og produsent. `vintage.name` er fullt navn med «U.V.»/«N.V.». |
+| `winery_name` | `vintage.wine.winery.name` | **Mangler helt** for 1 av 22 (Hummingbirds Chardonnay). CSV-en har også tom `Winery` for den, så hullet ligger i Vivinos data og ikke i parsingen. Må være nullable, eller C1 må endres. |
+| `vintage` | `vintage.year` | **NV = `0`** (4 av 22: «U.V.»/«N.V.»). `wine.non_vintage` er `true` for bare 1 av dem og er upålitelig. Regel: `year === 0` → `null`. |
+| `quantity` | `user_vintage.cellar_count` | Sum 28 = `statistics.bottle_count`. `extras.count` og `extras.bottles.length` er like. |
+| drikkevindu | `vintage.recommended_drinking_window` `{start_year, end_year, status}` | status 5 = Drink now, 4 = Drink or hold, 3 = Hold, 0/2 = ukjent (årene er `null`) |
+| snittrating | `vintage.statistics.ratings_average` / `ratings_count` | |
+| region, land | `vintage.wine.region.name`, `.country.code/.name` | |
+| pris | `extras.bottles[].purchase_price` + `purchase_price_currency_code` | Per flaske. Fylt for 8 av 28. |
+| innkjøpsdato | `extras.bottles[].purchase_date` (ISO) | Fylt for 24 av 28. Ikke det samme som `created_at` (lagt i kjeller). |
+| innkjøpssted | finnes **ikke** i JSON | Bare i CSV (`Purchase Location`, 14 av 28) |
+| egen rating | finnes ikke i noen av kildene | Alltid `null` uten `enrich` |
+| ekstra per flaske | `bin`, `note`, `bottle_size_id` (1 = 0.75l, 3 = ?) | CSV har `Bin number` og `Cellar note`, samt `Bottle size` som tekst |
+| ekstra, ikke i C1 | `wine.type_id`, `grapes[]`, `wine.style`, `wine_facts.alcohol` | Gratis og relevant for filtre (vintype), så `enrich` blir mindre nødvendig |
+
+**Konsekvens for C2/D4:** Drikkevindu, region og snittrating kommer allerede med i grunnkallet. `enrich` trengs nesten ikke for kjelleren, og `excluded_unknown` gjelder i praksis bare ukjent drikkevindu (5 flasker) og manglende produsent.
+
+#### `ready_to_drink` er løst av `props.statistics`
+`bottle_count 28 = ready_to_drink 19 + wines_to_hold 3 + past_its_peak 1 + unknown_drinking_window 5`. Rekonstruert: status ∈ {4, 5} **og** `end_year ≥ inneværende år` gir 19 (Gran Reserva 2006, vindu til 2023, er `past_its_peak`). Status 0/2 er ukjent. Vivino har i tillegg et serverside-filter (`props.ready_to_drink`, `search`, `sort_by`, `wine_type_id`), men D3 er lokale filtre og beholdes.
+
+#### Kontrolltall (grunnlag for L-5 og L-6 i stedet for HAR)
+22 viner og 28 flasker, identisk i HTML, JSON og CSV. CSV-ens vintage-lenker gir 22 unike ID-er, og alle matcher `vintage.id`. `statistics.bottle_count` = sum(`cellar_count`) er en billig invariant i L-5.
+
+### Anbefaling
+Bruk Inertia-JSON som hovedkilde for `vivino_get_cellar`, og slå inn CSV-feltene `Tag`, `Cellar Location` og `Purchase Location` per vintage (aggregert fra flaskerader) når de trengs. Da er C1 komplett bortsett fra egen rating, og CSV-en fungerer i tillegg som en uavhengig kryssjekk i L-6. Om CSV skal hentes alltid eller bare med et flagg, må avgjøres (se «Åpent»).
+
 ## Åpent
-- **Kjellerkilde (funn 2026-09-25):** Brukerens cURL-eksport inneholdt ingen XHR for kjellerdata. Siden `https://www.vivino.com/en/cellars/{cellar_id}` ser ut til å server-rendre dataene (sporingspixelen skraper «Total bottles», «Drink now», drikkevindu og «Added <dato>»). Siden bruker `window.__PRELOADED_STATE__`. `cellar_id` (144153) er **ikke** bruker-ID-en; `/cellars` videresender til riktig ID. Parseren bygges derfor sannsynligvis på HTML eller preloaded state, ikke på en JSON-API. Må bekreftes med en innlogget henting.
-- `VIVINO_SESSION_COOKIE` i sky-miljøet gir `is_signed_in: false` fra `/api/session` (utløpt eller feil format). Dette blokkerer L-1 til L-8 og kildeanalysen over.
+- **Bruker-ID:** CLAUDE.md sier `15328411`, men sesjonen og miljøet sier `6702495`. Hvilken er riktig for CLAUDE.md?
+- **`ready_to_drink`:** Forslaget er Vivinos egen definisjon (status 4/5 og vindu ikke passert), slik at tallet stemmer med appen (19). Må bekreftes.
+- **CSV-fletting:** Skal CSV-en hentes i hvert kall (+1 request, gir tag, plassering og innkjøpssted), eller bare med et flagg, f.eks. `include_purchase_details`?
+- **`winery_name` påkrevd (C1):** Vivino mangler produsent for minst én vin. Forslaget er nullable, med fallback til å parse `vintage.name`.
+- **Pris per vin:** Pris er per flaske (fylt for 8 av 28). Skal prisen vises per vin som et snitt, eller som en liste?
+- **HAR (B2/F3/L-6):** Er ikke lenger nødvendig. JSON + CSV + `statistics` gir tre uavhengige kilder til kontrolltall.
 - MCP-klientens tool-timeout er ukjent. L-3 rapporterer målt tid, og brukeren vurderer den.

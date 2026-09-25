@@ -46,9 +46,18 @@ function baseHeaders(extra: Record<string, string> = {}): Record<string, string>
     'Origin': VIVINO_BASE_URL,
     ...extra,
   };
-  const cookie = process.env.VIVINO_SESSION_COOKIE;
+  const cookie = sessionCookieHeader();
   if (cookie) h['Cookie'] = cookie;
   return h;
+}
+
+// VIVINO_SESSION_COOKIE may hold a full Cookie header ("name=value; ...") or just the bare
+// session value copied from DevTools. A bare value sent as-is is ignored by Vivino
+// (/api/session answers is_signed_in: false), so name it with the session cookie.
+export function sessionCookieHeader(): string | undefined {
+  const raw = process.env.VIVINO_SESSION_COOKIE?.trim();
+  if (!raw) return undefined;
+  return raw.includes('=') ? raw : `_ruby-web_session=${raw}`;
 }
 
 function xhrHeaders(csrf: string, extra: Record<string, string> = {}): Record<string, string> {

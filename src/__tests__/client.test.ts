@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { mockGet, mockCreate } = vi.hoisted(() => {
   const mockGet = vi.fn().mockResolvedValue({ data: { explore_vintage: { matches: [] } } });
@@ -13,7 +13,26 @@ vi.mock('axios', () => ({
   },
 }));
 
-import { fetchWineSearch, resolveRegionFromQuery } from '../client';
+import { fetchWineSearch, resolveRegionFromQuery, sessionCookieHeader } from '../client';
+
+describe('sessionCookieHeader', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('names a bare session value with _ruby-web_session', () => {
+    vi.stubEnv('VIVINO_SESSION_COOKIE', 'abc%2Fdef--123');
+    expect(sessionCookieHeader()).toBe('_ruby-web_session=abc%2Fdef--123');
+  });
+
+  it('passes a full Cookie header through unchanged', () => {
+    vi.stubEnv('VIVINO_SESSION_COOKIE', '_ruby-web_session=abc; other=1');
+    expect(sessionCookieHeader()).toBe('_ruby-web_session=abc; other=1');
+  });
+
+  it('returns undefined when unset or blank', () => {
+    vi.stubEnv('VIVINO_SESSION_COOKIE', '  ');
+    expect(sessionCookieHeader()).toBeUndefined();
+  });
+});
 
 describe('fetchWineSearch', () => {
   beforeEach(() => {
