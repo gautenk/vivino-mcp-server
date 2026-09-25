@@ -9,6 +9,7 @@ import { wineDetailsInputSchema, tasteProfileInputSchema, getWineDetails, getWin
 import { reviewsInputSchema, getWineReviews } from './tools/reviews';
 import { searchInputSchema, searchWines } from './tools/search';
 import { syncInputSchema, syncToObsidian } from './tools/obsidian';
+import { cellarInputSchema, getCellar } from './tools/cellar';
 
 const server = new McpServer({
   name: 'vivino-mcp-server',
@@ -21,12 +22,14 @@ server.registerTool(
     title: 'Get My Vivino Ratings',
     description:
       "Fetch the user's personal wine ratings from Vivino. Returns wine IDs, names, wineries, " +
-      'user ratings (1.0–5.0), personal tasting notes, and rated_at dates. Paginated by cursor — ' +
-      'check has_more and, if true, call again with start_from set to the previous response\'s ' +
-      'next_start_from (the page param is cosmetic and not sent to Vivino). ' +
+      'user ratings (1.0–5.0), personal tasting notes, and rated_at dates. Returns exactly ' +
+      'per_page ratings (default 10) matching the filters unless the history runs out or Vivino ' +
+      'rate-limits (then a warning is set). Paginated by cursor — check has_more and, if true, ' +
+      'call again with start_from set to the previous response\'s next_start_from (the page ' +
+      'param is cosmetic and not sent to Vivino). ' +
       'Filter with min_rating/max_rating, since (only ratings newer than a date), or ' +
-      'wine_name_query ("have I rated this wine?" — matches within the page(s) fetched; ' +
-      'paginate with start_from if not found and has_more is true). ' +
+      'wine_name_query ("have I rated this wine?"). Selective filters may scan the whole ' +
+      'history before returning. ' +
       'Wine IDs (and wine_url) returned here can be used with vivino_get_wine_taste_profile and ' +
       'vivino_get_wine_reviews directly. For vivino_get_wine_details, this wine_id/wine_url pair ' +
       'only supports a slower page-scrape lookup (no vintage_id is available from ratings data) — ' +
@@ -35,6 +38,27 @@ server.registerTool(
     annotations: { readOnlyHint: true, destructiveHint: false },
   },
   getUserRatings
+);
+
+server.registerTool(
+  'vivino_get_cellar',
+  {
+    title: 'Get My Vivino Cellar',
+    description:
+      "List the wines in the user's Vivino cellar (My Wines → Cellar): the bottles they own, " +
+      'with quantity, vintage (null = NV), region, country, wine type, grapes, average rating, ' +
+      "Vivino's drinking window and ready_to_drink verdict, per-bottle bin/note/purchase " +
+      'date/price, and tags, cellar locations and purchase locations from the cellar export. ' +
+      'Returns the whole cellar by default; pass per_page/page to page through it. Filters ' +
+      '(wine_name_query, vintage_min/max, country, region, min_quantity, ready_to_drink) are ' +
+      'strict: a wine whose filtered field is unknown is left out and counted in ' +
+      'excluded_unknown, with a warning. enrich: true adds taste profile, abv, style and food ' +
+      'pairings, and fills ready_to_drink for wines without a drinking window. vintage_id works ' +
+      'directly with vivino_get_wine_details; wine_id with the taste profile and reviews tools.',
+    inputSchema: cellarInputSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
+  getCellar
 );
 
 server.registerTool(

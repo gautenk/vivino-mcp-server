@@ -2,7 +2,16 @@ import { z } from 'zod';
 import * as cheerio from 'cheerio';
 import { resolveUserId, fetchActivities } from '../client';
 import { VivinoUserRating } from '../types';
-import { MAX_PER_PAGE, DEFAULT_PER_PAGE } from '../constants';
+import { MAX_PER_PAGE } from '../constants';
+import { rateLimitGuard, RATE_LIMITED, RATE_LIMIT_WARNING } from '../paging';
+
+// Ratings-specific default (decision F1). Each call now keeps fetching until
+// per_page is filled, so a smaller default keeps plain calls fast.
+const RATINGS_DEFAULT_PER_PAGE = 10;
+
+// Vivino's activities endpoint ignores every size parameter (limit, per_page,
+// count — confirmed live 2026-09-25, always 10 items). Sent anyway as a no-op.
+const ACTIVITIES_BATCH = 10;
 
 export const ratingsInputSchema = {
   page: z.number().int().min(1).default(1)
@@ -11,10 +20,12 @@ export const ratingsInputSchema = {
       'page number. To actually advance through results, pass the next_start_from value from ' +
       'the previous response as start_from.'
     ),
-  per_page: z.number().int().min(1).max(MAX_PER_PAGE).default(DEFAULT_PER_PAGE)
-    .describe('Number of activities to request from Vivino per call (max 100). Filters ' +
-      '(min_rating/max_rating/since) are applied after fetching, so the returned count can be ' +
-      'lower than per_page even when more results exist — check has_more, not count.'),
+  per_page: z.number().int().min(1).max(MAX_PER_PAGE).default(RATINGS_DEFAULT_PER_PAGE)
+    .describe('Number of ratings to return (default 10, max 100). Guaranteed: the server keeps ' +
+      'fetching Vivino batches (after applying min_rating/max_rating/since/wine_name_query) until ' +
+      'per_page ratings are found. Fewer come back only when the history runs out (has_more: ' +
+      'false) or Vivino rate-limits twice (has_more: true plus a warning). Selective filters can ' +
+      'scan the whole history and take a while.'),
   min_rating: z.number().min(1).max(5).optional()
     .describe('Filter: only return wines rated at or above this score (1.0–5.0)'),
   max_rating: z.number().min(1).max(5).optional()
@@ -151,6 +162,26 @@ export function parseActivitiesBody(body: string): {
   return { ratings, lastActivityId, rawItemCount };
 }
 
+type Filters = {
+  min_rating?: number;
+  max_rating?: number;
+  since?: string;
+  wine_name_query?: string;
+};
+
+function matchesFilters(r: VivinoUserRating, f: Filters): boolean {
+  if (f.min_rating !== undefined && r.user_rating < f.min_rating) return false;
+  if (f.max_rating !== undefined && r.user_rating > f.max_rating) return false;
+  if (f.since && new Date(r.rated_at).getTime() <= new Date(f.since).getTime()) return false;
+  if (f.wine_name_query) {
+    const needle = f.wine_name_query.toLowerCase();
+    if (!r.wine_name.toLowerCase().includes(needle) && !r.winery_name.toLowerCase().includes(needle)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function getUserRatings(args: {
   page: number;
   per_page: number;
@@ -162,45 +193,54 @@ export async function getUserRatings(args: {
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     await resolveUserId(); // validates auth early
-    const body = await fetchActivities(args.per_page, args.start_from);
-    let { ratings, lastActivityId, rawItemCount } = parseActivitiesBody(body);
+    const guarded = rateLimitGuard();
+    const collected: RatingWithActivityId[] = [];
+    // Cursor = last activity we have fully looked at. Every activity up to it
+    // is either returned or filtered out, so resuming from it never skips or
+    // repeats a rating.
+    let cursor: string | null = args.start_from ?? null;
+    let hasMore = true;
+    let warning: string | undefined;
 
-    if (args.min_rating !== undefined) ratings = ratings.filter(r => r.user_rating >= args.min_rating!);
-    if (args.max_rating !== undefined) ratings = ratings.filter(r => r.user_rating <= args.max_rating!);
-    if (args.since) {
-      const sinceMs = new Date(args.since).getTime();
-      ratings = ratings.filter(r => new Date(r.rated_at).getTime() > sinceMs);
-    }
-    if (args.wine_name_query) {
-      const needle = args.wine_name_query.toLowerCase();
-      ratings = ratings.filter(r =>
-        r.wine_name.toLowerCase().includes(needle) || r.winery_name.toLowerCase().includes(needle)
+    // Decision A2: no cap on batches — stop only when per_page is filled, the
+    // history is empty, or the 429 budget is spent. The client throttles every
+    // request to 700 ms.
+    while (collected.length < args.per_page) {
+      const body = await guarded(() =>
+        fetchActivities(ACTIVITIES_BATCH, cursor ?? undefined, { retry429: false })
       );
+      if (body === RATE_LIMITED) {
+        warning = RATE_LIMIT_WARNING;
+        break;
+      }
+      const { ratings, lastActivityId, rawItemCount } = parseActivitiesBody(body);
+      if (rawItemCount === 0 || lastActivityId === null) {
+        hasMore = false;
+        break;
+      }
+      let filledAt: string | null = null;
+      for (const r of ratings) {
+        if (!matchesFilters(r, args)) continue;
+        collected.push(r);
+        if (collected.length === args.per_page) {
+          filledAt = r._activityId;
+          break;
+        }
+      }
+      // Filled mid-batch: resume right after the last returned rating so the
+      // rest of this batch comes back on the next call.
+      cursor = filledAt ?? lastActivityId;
     }
-
-    // Vivino's activities endpoint doesn't reliably honor the requested limit —
-    // live testing showed it return a fixed ~10-item batch regardless of
-    // per_page. Truncate to per_page ourselves, but the pagination cursor has
-    // to move with the truncation: if we hand back fewer items than we fetched,
-    // next_start_from must point at the LAST ITEM WE ACTUALLY RETURNED, not the
-    // raw batch's last item — otherwise the next call would silently skip every
-    // activity between the two.
-    const truncated = ratings.length > args.per_page;
-    if (truncated) ratings = ratings.slice(0, args.per_page);
-
-    const nextStartFrom = truncated
-      ? ratings[ratings.length - 1]._activityId
-      : lastActivityId;
-    const hasMore = truncated || (lastActivityId !== null && rawItemCount > 0);
 
     const result = {
       page: args.page,
       per_page: args.per_page,
-      count: ratings.length,
-      next_start_from: nextStartFrom,
+      count: collected.length,
+      next_start_from: cursor,
       has_more: hasMore,
+      ...(warning ? { warning } : {}),
       // Strip the internal cursor field before returning to the caller.
-      ratings: ratings.map(({ _activityId, ...r }) => r),
+      ratings: collected.map(({ _activityId, ...r }) => r),
     };
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   } catch (err) {

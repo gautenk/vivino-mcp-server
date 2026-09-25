@@ -12,6 +12,7 @@ An MCP (Model Context Protocol) server that brings your Vivino wine ratings into
 ## Features
 
 - **Get Personal Ratings** — Fetch your Vivino wine ratings with filtering, pagination, and date range support
+- **Cellar** — List the bottles in your Vivino cellar with quantity, drinking window, purchase details, tags and locations
 - **Wine Details** — Retrieve comprehensive information about wines (grapes, region, ABV, food pairings, community ratings)
 - **Taste Profiles** — Get structured sensory analysis (acidity, sweetness, tannin, intensity, fizziness) and flavor keywords
 - **Wine Reviews** — Access community and critic tasting notes
@@ -42,7 +43,7 @@ npm run build
 2. Open Chrome DevTools (F12 / Cmd+Option+I)
 3. Go to **Application** → **Cookies** → **vivino.com**
 4. Find the cookie(s) — copy their name and value (e.g., `_session_id=abc123`)
-5. Save to `.env` as: `VIVINO_SESSION_COOKIE=_session_id=abc123; other_cookie=val`
+5. Save to `.env` as: `VIVINO_SESSION_COOKIE=_ruby-web_session=abc123` (a bare value without `name=` is also accepted and sent as `_ruby-web_session`)
 
 ### 2. Get Your Vivino User ID (Optional)
 
@@ -120,16 +121,30 @@ The server listens on stdio and outputs to stderr.
 Fetch your personal wine ratings.
 
 **Parameters:**
-- `page` (number, default: 1) — Page number for pagination
-- `per_page` (number, default: 25, max: 100) — Results per page
+- `per_page` (number, default: 10, max: 100) — Ratings to return. The server keeps fetching Vivino batches until this many match the filters, the history ends, or Vivino rate-limits twice (then `warning` is set)
+- `start_from` (string) — Cursor: the previous response's `next_start_from`
 - `min_rating` (number, 1.0–5.0) — Filter: minimum rating
 - `max_rating` (number, 1.0–5.0) — Filter: maximum rating
 - `since` (string, ISO 8601) — Filter: ratings newer than this date
+- `wine_name_query` (string) — Filter: wine or winery name contains this text
 
 **Example:**
 ```
 get my wine ratings since 2025-01-01 with min_rating 4.0
 ```
+
+### vivino_get_cellar
+
+List the wines in your cellar (My Wines → Cellar).
+
+**Parameters:**
+- `per_page` / `page` (number, optional) — Page through the result; omit for the whole cellar
+- `enrich` (boolean, default: false) — Add taste profile (one request per wine), ABV, style and food pairings; fill `ready_to_drink` for wines without a drinking window
+- Filters: `wine_name_query`, `vintage_min`, `vintage_max`, `country` (name or code), `region`, `min_quantity`, `ready_to_drink`
+
+Filters are strict: a wine whose filtered field is unknown (e.g. NV for `vintage_min`) is left out and counted in `excluded_unknown`.
+
+**Returns:** per wine `wine_id`, `vintage_id`, name, winery, vintage (null = NV), quantity, type, country, region, grapes, average rating, drinking window and `ready_to_drink` (Vivino's own verdict), purchase price/date, tags, cellar and purchase locations, and per-bottle bin, note, size, purchase date and price. Also Vivino's own cellar totals.
 
 ### vivino_get_wine_details
 
@@ -194,8 +209,9 @@ Export your ratings to Obsidian.
 ## Testing
 
 ```bash
-npm test           # Run tests once
+npm test           # Run tests once (offline)
 npm run test:watch # Watch mode
+npm run test:live  # Live checks against vivino.com; writes live-report.md. Run by hand before pushing
 ```
 
 ## Troubleshooting

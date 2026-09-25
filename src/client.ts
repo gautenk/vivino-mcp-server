@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import * as cheerio from 'cheerio';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
@@ -70,13 +71,18 @@ function xhrHeaders(csrf: string, extra: Record<string, string> = {}): Record<st
 }
 
 // ---- Retry ----
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+// retry429: false hands a 429 straight back to the caller. The paging loops
+// (ratings, cellar) use it so they can own the "one 60 s wait per tool call,
+// then return partial" policy themselves — see rateLimitGuard in paging.ts.
+export interface RetryOptions { retry429?: boolean }
+
+async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}): Promise<T> {
   await throttle();
   try {
     return await fn();
   } catch (err) {
     const e = err as AxiosError;
-    if (e.response?.status === 429) {
+    if (e.response?.status === 429 && opts.retry429 !== false) {
       const wait = Number(e.response.headers['retry-after'] ?? 0) * 1000 || RETRY_AFTER_429_MS;
       await new Promise(r => setTimeout(r, wait));
       await throttle();
@@ -160,7 +166,11 @@ export function invalidateCsrf(): void {
 // ---- Activities (ratings) ----
 // Returns the raw jQuery/HTML response body.
 // Uses user ID in the path and start_from_id for cursor pagination (discovered via browser network inspection).
-export async function fetchActivities(limit: number, startFrom?: string): Promise<string> {
+export async function fetchActivities(
+  limit: number,
+  startFrom?: string,
+  opts: RetryOptions = {}
+): Promise<string> {
   const csrf = await fetchCsrfToken();
   const userId = await resolveUserId();
   const params: Record<string, string | number> = { limit };
@@ -172,7 +182,8 @@ export async function fetchActivities(limit: number, startFrom?: string): Promis
         params,
         headers: xhrHeaders(csrf),
         timeout: 20_000,
-      })
+      }),
+      opts
     );
     return String(res.data);
   } catch (err) {
@@ -186,12 +197,115 @@ export async function fetchActivities(limit: number, startFrom?: string): Promis
           params,
           headers: xhrHeaders(freshCsrf),
           timeout: 20_000,
-        })
+        }),
+        opts
       );
       return String(res.data);
     }
     throw err;
   }
+}
+
+// ---- Cellar ----
+// Confirmed live (2026-09-25): the cellar page is an Inertia.js page
+// (component "cellars/show"). There is no JSON API behind it — the data is the
+// Inertia page object, embedded in the HTML as <div data-page="..."> and served
+// as plain JSON when the same URL is requested with X-Inertia headers. That JSON
+// request needs the current asset version (X-Inertia-Version); a missing or
+// stale one gets a 409, so the version is bootstrapped from the HTML once.
+// /en/cellars redirects to /en/cellars/{cellar_id}; cellar_id is NOT the user ID.
+export interface CellarPageProps {
+  cellar_id: number;
+  total_count: number;
+  entries: unknown[];
+  statistics?: unknown;
+  [key: string]: unknown;
+}
+
+let cellarBootstrap: { cellarId: number; version: string } | null = null;
+
+export class VivinoFormatError extends Error {}
+
+function assertCellarProps(page: unknown, where: string): CellarPageProps {
+  const props = (page as { props?: Record<string, unknown> } | null)?.props;
+  if (!props || !Array.isArray(props.entries) || typeof props.total_count !== 'number'
+      || typeof props.cellar_id !== 'number') {
+    throw new VivinoFormatError(
+      `Vivino cellar ${where} did not have the expected shape (props.entries / total_count / ` +
+      'cellar_id). Vivino has probably changed the cellar page (feature flag cellar_v2?), ' +
+      'or the session cookie is no longer signed in.'
+    );
+  }
+  return props as unknown as CellarPageProps;
+}
+
+export function parseInertiaPage(html: string): { version: string; props: CellarPageProps } {
+  const raw = cheerio.load(html)('[data-page]').attr('data-page');
+  if (!raw) {
+    throw new VivinoFormatError(
+      'Vivino cellar page had no Inertia data-page attribute. Either the session cookie is not ' +
+      'signed in (VIVINO_SESSION_COOKIE) or Vivino has changed the cellar page.'
+    );
+  }
+  const page = JSON.parse(raw) as { version?: unknown };
+  return { version: String(page.version ?? ''), props: assertCellarProps(page, 'page HTML') };
+}
+
+async function bootstrapCellar(opts: RetryOptions): Promise<{ cellarId: number; version: string }> {
+  const res = await withRetry(() =>
+    axios.get(`${VIVINO_BASE_URL}/en/cellars`, { headers: baseHeaders(), timeout: 30_000 }),
+    opts
+  );
+  const { version, props } = parseInertiaPage(String(res.data));
+  cellarBootstrap = { cellarId: props.cellar_id, version };
+  return cellarBootstrap;
+}
+
+export async function fetchCellarPage(
+  page: number,
+  perPage: number,
+  opts: RetryOptions = {}
+): Promise<CellarPageProps> {
+  const boot = cellarBootstrap ?? await bootstrapCellar(opts);
+  const get = (b: { cellarId: number; version: string }) => withRetry(() =>
+    axios.get(`${VIVINO_BASE_URL}/en/cellars/${b.cellarId}`, {
+      params: { page, per_page: perPage },
+      headers: baseHeaders({
+        Accept: 'text/html, application/xhtml+xml',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Inertia': 'true',
+        'X-Inertia-Version': b.version,
+      }),
+      timeout: 20_000,
+    }),
+    opts
+  );
+  try {
+    return assertCellarProps((await get(boot)).data, 'JSON response');
+  } catch (err) {
+    if ((err as AxiosError).response?.status !== 409) throw err;
+    // Asset version moved on (Vivino deployed) — re-read it and retry once.
+    return assertCellarProps((await get(await bootstrapCellar(opts))).data, 'JSON response');
+  }
+}
+
+// Same request the cellar page's "Export" button makes (feature flag cellar_export).
+// One CSV row per bottle, with the fields the Inertia JSON lacks: Tag,
+// Cellar Location and Purchase Location.
+export async function fetchCellarExport(cellarId: number, opts: RetryOptions = {}): Promise<string> {
+  const res = await withRetry(() =>
+    axios.get(`${VIVINO_BASE_URL}/cellars/${cellarId}/export`, {
+      headers: baseHeaders({ Accept: 'text/csv' }),
+      responseType: 'text',
+      timeout: 30_000,
+    }),
+    opts
+  );
+  const type = String(res.headers?.['content-type'] ?? '');
+  if (!type.includes('text/csv')) {
+    throw new VivinoFormatError(`Vivino cellar export returned ${type || 'no content type'}, not text/csv.`);
+  }
+  return String(res.data);
 }
 
 // ---- Wine detail API (may work with valid session cookie) ----
@@ -256,9 +370,9 @@ export async function fetchWineDetails(
   }, CACHE_TTL_WINE_DETAILS_MS);
 }
 
-export async function fetchWineTastes(wineId: number): Promise<unknown> {
+export async function fetchWineTastes(wineId: number, opts: RetryOptions = {}): Promise<unknown> {
   return getCached(`tastes:${wineId}`, async () => {
-    const res = await withRetry(() => apiHttp.get(`/wines/${wineId}/tastes`));
+    const res = await withRetry(() => apiHttp.get(`/wines/${wineId}/tastes`), opts);
     return res.data;
   }, CACHE_TTL_TASTE_MS);
 }
@@ -347,4 +461,5 @@ export function clearCache(): void {
   cache.clear();
   resolvedUserId = null;
   cachedCsrf = null;
+  cellarBootstrap = null;
 }

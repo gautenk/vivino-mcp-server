@@ -74,3 +74,56 @@ export interface SyncState {
   last_activity_id: string | null;
   total_wines_synced: number;
 }
+
+export interface CellarBottle {
+  size: string | null;
+  bin: string | null;
+  note: string | null;
+  purchase_date: string | null;
+  purchase_price: number | null;
+  purchase_price_currency: string | null;
+}
+
+export type DrinkingWindowStatus = 'drink_now' | 'drink_or_hold' | 'hold' | 'past_peak' | 'unknown';
+
+export interface CellarWine {
+  wine_id: number;
+  // Pass this to vivino_get_wine_details as vintage_id.
+  vintage_id: number;
+  wine_name: string;
+  // Vivino has wines with no winery at all (confirmed live), so this can be null.
+  winery_name: string | null;
+  vintage: number | null;
+  quantity: number;
+  wine_type: string | null;
+  country: string | null;
+  country_code: string | null;
+  region: string | null;
+  grapes: string[];
+  avg_rating: number | null;
+  ratings_count: number | null;
+  // No cellar source carries the user's own rating; kept for the C1 contract.
+  user_rating: null;
+  drinking_window: { start_year: number | null; end_year: number | null; status: DrinkingWindowStatus };
+  ready_to_drink: boolean | null;
+  // 'vivino': Vivino's own drinking-window verdict. 'inferred': enrich filled it
+  // in for a wine Vivino shows as "Drink at your pace" (no window).
+  ready_to_drink_source: 'vivino' | 'inferred' | null;
+  added_at: string | null;
+  // Mean of the bottles with a known price, only when they share one currency.
+  purchase_price: number | null;
+  purchase_price_currency: string | null;
+  // Most recent known purchase date across the bottles.
+  purchase_date: string | null;
+  // From the CSV export (not in the page JSON).
+  purchase_locations: string[];
+  cellar_locations: string[];
+  tags: string[];
+  bottles: CellarBottle[];
+  vivino_url: string;
+  // enrich: true only
+  abv?: number | null;
+  style?: string | null;
+  food_pairings?: string[];
+  taste_profile?: VivinoTasteProfile | null;
+}

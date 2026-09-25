@@ -34,3 +34,6 @@ yarn-error.log*
 # Obsidian sync state (personal)
 .sync-state.json
 .manifest.json
+
+# Live test report (personal cellar data)
+live-report.md

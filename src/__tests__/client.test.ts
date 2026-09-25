@@ -13,7 +13,10 @@ vi.mock('axios', () => ({
   },
 }));
 
-import { fetchWineSearch, resolveRegionFromQuery, sessionCookieHeader } from '../client';
+import {
+  fetchWineSearch, resolveRegionFromQuery, sessionCookieHeader, fetchActivities, clearCache,
+  fetchCellarPage, fetchCellarExport, parseInertiaPage, VivinoFormatError,
+} from '../client';
 
 describe('sessionCookieHeader', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -104,5 +107,102 @@ describe('resolveRegionFromQuery', () => {
     mockGet.mockResolvedValue({ data: { regions: [] } });
     const result = await resolveRegionFromQuery('Sassicaia');
     expect(result).toBeNull();
+  });
+});
+
+describe('fetchActivities throttling (A-U9)', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+
+  it('spaces consecutive batch requests by at least 700 ms', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VIVINO_USER_ID', '1');
+    clearCache();
+    const times: number[] = [];
+    mockGet.mockImplementation(async (url: string) => {
+      if (url.includes('/activities')) times.push(Date.now());
+      return { data: '<meta name="csrf-token" content="t">' };
+    });
+    const pending = (async () => {
+      await fetchActivities(10);
+      await fetchActivities(10, 'a');
+      await fetchActivities(10, 'b');
+    })();
+    await vi.runAllTimersAsync();
+    await pending;
+    expect(times).toHaveLength(3);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(700);
+    expect(times[2] - times[1]).toBeGreaterThanOrEqual(700);
+  });
+
+  it('passes a 429 straight through when retry429 is false', async () => {
+    vi.stubEnv('VIVINO_USER_ID', '1');
+    clearCache();
+    mockGet.mockImplementation(async (url: string) => {
+      if (url.includes('/activities')) throw { response: { status: 429, headers: {} } };
+      return { data: '<meta name="csrf-token" content="t">' };
+    });
+    await expect(fetchActivities(10, undefined, { retry429: false }))
+      .rejects.toMatchObject({ response: { status: 429 } });
+  });
+});
+
+function pageHtml(page: unknown): string {
+  const attr = JSON.stringify(page).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  return `<html><body><div id="app" data-page="${attr}"></div></body></html>`;
+}
+
+const cellarProps = (entries: unknown[] = []) =>
+  ({ cellar_id: 42, total_count: entries.length, entries, statistics: {} });
+
+describe('cellar client', () => {
+  beforeEach(() => { clearCache(); vi.clearAllMocks(); });
+
+  it('parseInertiaPage decodes the data-page attribute, including entities in values', () => {
+    const { version, props } = parseInertiaPage(
+      pageHtml({ version: 'v1', props: cellarProps([{ note: 'Kjøpt "på" Polet & co' }]) })
+    );
+    expect(version).toBe('v1');
+    expect((props.entries[0] as { note: string }).note).toBe('Kjøpt "på" Polet & co');
+  });
+
+  it('bootstraps version and cellar_id from HTML, then requests JSON with Inertia headers', async () => {
+    mockGet
+      .mockResolvedValueOnce({ data: pageHtml({ version: 'v1', props: cellarProps() }) })
+      .mockResolvedValueOnce({ data: { props: cellarProps([{}]) } });
+    const props = await fetchCellarPage(2, 50);
+    expect(props.entries).toHaveLength(1);
+    const [url, config] = mockGet.mock.calls[1];
+    expect(url).toMatch(/\/en\/cellars\/42$/);
+    expect(config.params).toEqual({ page: 2, per_page: 50 });
+    expect(config.headers['X-Inertia']).toBe('true');
+    expect(config.headers['X-Inertia-Version']).toBe('v1');
+  });
+
+  it('re-reads the asset version once on 409', async () => {
+    mockGet
+      .mockResolvedValueOnce({ data: pageHtml({ version: 'old', props: cellarProps() }) })
+      .mockRejectedValueOnce({ response: { status: 409, headers: {} } })
+      .mockResolvedValueOnce({ data: pageHtml({ version: 'new', props: cellarProps() }) })
+      .mockResolvedValueOnce({ data: { props: cellarProps([{}, {}]) } });
+    const props = await fetchCellarPage(1, 50);
+    expect(props.entries).toHaveLength(2);
+    expect(mockGet.mock.calls[3][1].headers['X-Inertia-Version']).toBe('new');
+  });
+
+  it('C-U13: an HTML page without data-page is a clear error, not an empty cellar', async () => {
+    mockGet.mockResolvedValueOnce({ data: '<html><body>Log in</body></html>' });
+    await expect(fetchCellarPage(1, 50)).rejects.toThrow(/data-page/);
+  });
+
+  it('C-U13: JSON of an unexpected shape is a clear error', async () => {
+    mockGet
+      .mockResolvedValueOnce({ data: pageHtml({ version: 'v1', props: cellarProps() }) })
+      .mockResolvedValueOnce({ data: { props: { items: [] } } });
+    await expect(fetchCellarPage(1, 50)).rejects.toBeInstanceOf(VivinoFormatError);
+  });
+
+  it('fetchCellarExport rejects a non-CSV response', async () => {
+    mockGet.mockResolvedValueOnce({ data: '<html/>', headers: { 'content-type': 'text/html' } });
+    await expect(fetchCellarExport(42)).rejects.toThrow(/not text\/csv/);
   });
 });

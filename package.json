@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "dev": "tsc && node dist/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:live": "npm run build && node scripts/test-live.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",

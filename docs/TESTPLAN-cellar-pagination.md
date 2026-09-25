@@ -1,6 +1,6 @@
 # Testplan: cellar-liste og ekte `per_page`
 
-Status: vedtatt (grill-sesjon 2026-09-25). Live-sondering er gjennomført (se «Funn»). Bare cookie-fiksen er implementert.
+Status: implementert 2026-09-25 (sesjon 2). `npm test` er grønn (104 tester), og `npm run test:live` er grønn for L-1 til L-8. M-1 venter på brukeren.
 
 ## Beslutninger
 
@@ -17,7 +17,7 @@ Status: vedtatt (grill-sesjon 2026-09-25). Live-sondering er gjennomført (se «
 |---|---|
 | B1 | «Cellar» betyr faktisk beholdning (My Wines → Cellar): flasker med antall. Ikke activity-hendelser, ikke wishliste. |
 | B2 | Endepunktet hentes fra en HAR eller cURL fra brukeren (uten cookie). Live-verifiseringen kjøres i denne sesjonen. |
-| C1 | **Påkrevd:** `wine_id`, `wine_name`, `winery_name`, `vintage` (null = NV), `quantity`. **Nullable:** drikkevindu, egen rating, snittrating, pris, innkjøpsdato, innkjøpssted. |
+| C1 | **Påkrevd:** `wine_id`, `wine_name`, `vintage` (null = NV), `quantity`. **Nullable:** `winery_name` (H3), drikkevindu, egen rating, snittrating, pris, innkjøpsdato, innkjøpssted. |
 | C2 | `enrich: boolean`, standard `false`. Med `true` hentes wine details per vin, med cache og throttling. |
 | D1 | Obsidian-integrasjon er utenfor omfang og tas i en egen runde senere. |
 | D2 | Hele kjelleren returneres som standard, med intern paginering. Valgfri `per_page`/`page` overstyrer, med samme utfyllingssemantikk som A2. |
@@ -99,12 +99,12 @@ Hvis kjelleren er på én Vivino-side eller mindre, dekkes intern paginering bar
 | M-2 | `node dist/index.js` over stdio: `tools/list` | `vivino_get_cellar` er listet med alle parametere og beskrivelser. `per_page` har standard 10 i ratings. |
 
 ## Ferdig når
-- [ ] `npm test` er grønn, inkludert alle A-U* og C-U*
-- [ ] `npm run build` fullfører uten feil
-- [ ] Rapporten fra `npm run test:live` er grønn (L-2 til L-8) og ligger i PR- eller commit-beskrivelsen
+- [x] `npm test` er grønn, inkludert alle A-U* og C-U*
+- [x] `npm run build` fullfører uten feil
+- [x] Rapporten fra `npm run test:live` er grønn (L-2 til L-8) og ligger i PR- eller commit-beskrivelsen
 - [ ] M-1 er bekreftet av brukeren
-- [ ] Ingen personlige data i committede fixtures (pris, sted og notater er syntetiske)
-- [ ] CLAUDE.md er oppdatert med det nye cellar-endepunktet under «Known Pitfalls»
+- [x] Ingen personlige data i committede fixtures (pris, sted og notater er syntetiske)
+- [x] CLAUDE.md er oppdatert med det nye cellar-endepunktet under «Known Pitfalls»
 
 ## Funn fra live-sondering (2026-09-25, sesjon 2)
 
@@ -157,11 +157,37 @@ Hvis kjelleren er på én Vivino-side eller mindre, dekkes intern paginering bar
 ### Anbefaling
 Bruk Inertia-JSON som hovedkilde for `vivino_get_cellar`, og slå inn CSV-feltene `Tag`, `Cellar Location` og `Purchase Location` per vintage (aggregert fra flaskerader) når de trengs. Da er C1 komplett bortsett fra egen rating, og CSV-en fungerer i tillegg som en uavhengig kryssjekk i L-6. Om CSV skal hentes alltid eller bare med et flagg, må avgjøres (se «Åpent»).
 
+## Beslutninger fra sesjon 2 (brukeren, 2026-09-25)
+| # | Beslutning |
+|---|---|
+| H1 | Bruker-ID i CLAUDE.md rettes til `6702495`. |
+| H2 | CSV-eksporten hentes **alltid** (+1 request). Hvis den feiler, gir det bare en `warning`, og kjelleren returneres likevel. |
+| H3 | `winery_name` er nullable (C1 er endret). Det finnes ingen fallback-parsing, fordi `vintage.name` ikke har produsenten når den mangler. |
+| H4 | `ready_to_drink` følger Vivinos definisjon (status 4/5 og vindu ikke passert). Med `enrich: true` fylles mer ut: viner uten drikkevindu («Drink at your pace») settes til `ready_to_drink: true` med `ready_to_drink_source: "inferred"`. |
+
+**Avvik fra C2/C-U7, med begrunnelse:** `/api/vintages/{id}` ble sjekket live for de 5 vinene uten drikkevindu. Den gir det samme tomme vinduet og ingen felt som ikke allerede ligger i kjeller-JSON-en. `enrich` henter derfor **smaksprofilen** (`/wines/{id}/tastes`, ett kall per unike `wine_id`, bare for vinene på den returnerte siden) og legger til `abv`, `style` og `food_pairings` fra JSON-en uten ekstra kall.
+
+## Implementert
+- `src/client.ts`: `sessionCookieHeader()`, `withRetry(..., { retry429: false })`, `fetchCellarPage` (Inertia med bootstrap av versjon og `cellar_id` fra HTML, og ny henting ved 409), `fetchCellarExport`, `parseInertiaPage` og `VivinoFormatError` (C-U13).
+- `src/paging.ts`: `rateLimitGuard()` er A3-regelen for et helt verktøykall og deles av ratings, kjeller og enrich.
+- `src/tools/ratings.ts`: fyll-løkke (A2), lokal standard `per_page` = 10 (F1). Cursoren er den sist gjennomgåtte aktiviteten, eller den sist returnerte ratingen hvis siden ble fylt midt i en batch. Obsidian-sync er uendret.
+- `src/tools/cellar.ts` + `vivino_get_cellar` i `src/index.ts`. Fixtures i `src/__tests__/fixtures/` er anonymisert: notater, priser, kjøpssteder og tags er syntetiske.
+- `scripts/test-live.js` (`npm run test:live [L-n ...]`) skriver `live-report.md`, som er gitignored.
+
+## Resultat av live-testene (2026-09-25)
+| ID | Resultat |
+|---|---|
+| L-1 | Alle størrelsesparametere → 10 per kall |
+| L-2 | ✅ 100 = 100 ratinger, 0 duplikater, identiske mengder. 17 requests (7) og 11 requests (100). Vivinos `/api/users/{id}` oppgir `ratings_count: 100`, så hele historikken er dekket. |
+| L-3 | ✅ `min_rating: 4.8, per_page: 100`: 1 treff, 11 requests, 7,7 s (grense 60 s). Med 100 ratinger er verste fall en hel skanning på rundt 8 s. |
+| L-4 | ✅ 10 ratinger, `has_more: true` |
+| L-5 | ✅ 22 viner og 28 flasker = Vivinos `statistics`, 3 requests (HTML-bootstrap, JSON og CSV). Kjelleren får plass på én intern side, så paginering over flere sider er bare dekket offline (C-U4). |
+| L-6 | ✅ Kjelleren mot CSV: 22 og 22 viner, 0 avvik i `quantity` |
+| L-7 | ✅ 3 av 3 viner beriket, 5 requests, 3,5 s |
+| L-8 | ✅ Søk, detaljer og anmeldelser svarer som før |
+| M-2 | ✅ `tools/list` viser `vivino_get_cellar` med alle parametere og beskrivelser, og ratings har `per_page`-standard 10 |
+
 ## Åpent
-- **Bruker-ID:** CLAUDE.md sier `15328411`, men sesjonen og miljøet sier `6702495`. Hvilken er riktig for CLAUDE.md?
-- **`ready_to_drink`:** Forslaget er Vivinos egen definisjon (status 4/5 og vindu ikke passert), slik at tallet stemmer med appen (19). Må bekreftes.
-- **CSV-fletting:** Skal CSV-en hentes i hvert kall (+1 request, gir tag, plassering og innkjøpssted), eller bare med et flagg, f.eks. `include_purchase_details`?
-- **`winery_name` påkrevd (C1):** Vivino mangler produsent for minst én vin. Forslaget er nullable, med fallback til å parse `vintage.name`.
-- **Pris per vin:** Pris er per flaske (fylt for 8 av 28). Skal prisen vises per vin som et snitt, eller som en liste?
-- **HAR (B2/F3/L-6):** Er ikke lenger nødvendig. JSON + CSV + `statistics` gir tre uavhengige kilder til kontrolltall.
-- MCP-klientens tool-timeout er ukjent. L-3 rapporterer målt tid, og brukeren vurderer den.
+- **M-1:** Brukeren sammenligner tallene i `live-report.md` (22 viner, 28 flasker og 5 tilfeldige viner) med Vivino-appen.
+- **`rated_at` for gamle ratinger (eksisterende feil, utenfor omfang):** Vivino-titlene mangler årstall, og `parseVivinoDate` velger det nyeste året som ikke ligger i fremtiden. Den eldste aktiviteten (ID 25125908, som er mye eldre enn de nyeste) fikk derfor `2026-04-12`. `since`-filteret og Obsidian-datoene er upålitelige for ratinger som er mer enn ett år gamle.
+- MCP-klientens faktiske tool-timeout er ukjent. L-3 bruker 60 s (MCP SDK-standard), som kan overstyres med `LIVE_TOOL_TIMEOUT_MS`.
