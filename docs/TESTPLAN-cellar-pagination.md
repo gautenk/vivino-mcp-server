@@ -107,5 +107,6 @@ Hvis kjelleren er på én Vivino-side eller mindre, dekkes intern paginering bar
 - [ ] CLAUDE.md er oppdatert med det nye cellar-endepunktet under «Known Pitfalls»
 
 ## Åpent
-- HAR/cURL for kjeller-siden (blokkerer C-U1–C-U3, L-6 og all parsing).
-- MCP-klientens faktiske tool-timeout (trengs for å vurdere L-3).
+- **Kjellerkilde (funn 2026-09-25):** Brukerens cURL-eksport inneholdt ingen XHR for kjellerdata. Siden `https://www.vivino.com/en/cellars/{cellar_id}` ser ut til å server-rendre dataene (sporingspixelen skraper «Total bottles», «Drink now», drikkevindu og «Added <dato>»). Siden bruker `window.__PRELOADED_STATE__`. `cellar_id` (144153) er **ikke** bruker-ID-en; `/cellars` videresender til riktig ID. Parseren bygges derfor sannsynligvis på HTML eller preloaded state, ikke på en JSON-API. Må bekreftes med en innlogget henting.
+- `VIVINO_SESSION_COOKIE` i sky-miljøet gir `is_signed_in: false` fra `/api/session` (utløpt eller feil format). Dette blokkerer L-1 til L-8 og kildeanalysen over.
+- MCP-klientens tool-timeout er ukjent. L-3 rapporterer målt tid, og brukeren vurderer den.
