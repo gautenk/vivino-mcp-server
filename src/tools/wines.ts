@@ -58,8 +58,10 @@ export function parseWineDetails(raw: unknown): VivinoWineDetails {
     region: region ? String(region.name) : null,
     country: country ? String(country.name) : null,
     grape_varieties: grapes.map(g => String(g.name ?? '')).filter(Boolean),
-    abv: wine.alcohol != null ? Number(wine.alcohol) : null,
-    avg_rating: stats?.ratings_average != null ? Number(stats.ratings_average) : null,
+    // Vivino sends 0 for unknown ABV and for a vintage with too few ratings to
+    // average; report those as null, as vivino_get_cellar does.
+    abv: Number(wine.alcohol) || null,
+    avg_rating: Number(stats?.ratings_average) || null,
     ratings_count: stats?.ratings_count != null ? Number(stats.ratings_count) : null,
     style_description: style?.description ? String(style.description) : null,
     food_pairings: food.map(f => String(f.name ?? '')).filter(Boolean),

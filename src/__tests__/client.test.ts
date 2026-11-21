@@ -201,6 +201,57 @@ describe('cellar client', () => {
     await expect(fetchCellarPage(1, 50)).rejects.toBeInstanceOf(VivinoFormatError);
   });
 
+  it('cellar_v2: fetches deferred entries and overview with Inertia partial reloads', async () => {
+    const v2Page = {
+      component: 'cellars/show_v2', version: 'v9',
+      props: { cellar_id: 42, page: 1 },
+      deferredProps: { cellar: ['entries', 'total_count', 'currency', 'currencies'], overview: ['overview'] },
+    };
+    mockGet
+      .mockResolvedValueOnce({ data: pageHtml(v2Page) })
+      .mockResolvedValueOnce({ data: { props: { entries: [{}, {}], total_count: 2 } } })
+      .mockResolvedValueOnce({ data: { props: { overview: {
+        bottle_count: 3,
+        drinking_windows: { ready_to_drink: { total: 1 }, hold: { total: 0 }, past_peak: { total: 0 }, unknown: { total: 1 } },
+        valuation: { total_value: 500, currency: 'NOK' },
+      } } } });
+    const props = await fetchCellarPage(1, 50);
+    expect(props.cellar_id).toBe(42);
+    expect(props.entries).toHaveLength(2);
+    expect(props.statistics).toEqual({
+      bottle_count: 3, ready_to_drink_count: 1, wines_to_hold_count: 0, past_its_peak_count: 0,
+      unknown_drinking_window_count: 1, average_price_sum: 500, currency_code: 'NOK',
+    });
+    const entriesCall = mockGet.mock.calls[1][1];
+    expect(entriesCall.params).toEqual({ page: 1, per_page: 50 });
+    expect(entriesCall.headers['X-Inertia-Partial-Component']).toBe('cellars/show_v2');
+    expect(entriesCall.headers['X-Inertia-Partial-Data']).toBe('entries,total_count');
+    expect(mockGet.mock.calls[2][1].headers['X-Inertia-Partial-Data']).toBe('overview');
+
+    // Later pages reuse the bootstrap and skip the overview.
+    mockGet.mockResolvedValueOnce({ data: { props: { entries: [{}], total_count: 3 } } });
+    const p2 = await fetchCellarPage(2, 2);
+    expect(p2.entries).toHaveLength(1);
+    expect(mockGet).toHaveBeenCalledTimes(4);
+  });
+
+  it('re-bootstraps once when a cached v1 bootstrap meets a v2 response', async () => {
+    mockGet
+      .mockResolvedValueOnce({ data: pageHtml({ version: 'v1', props: cellarProps() }) })
+      .mockResolvedValueOnce({ data: { props: cellarProps([{}]) } });
+    await fetchCellarPage(1, 50);
+    mockGet
+      .mockResolvedValueOnce({ data: { props: { cellar_id: 42 } } })
+      .mockResolvedValueOnce({ data: pageHtml({
+        component: 'cellars/show_v2', version: 'v2', props: { cellar_id: 42 },
+        deferredProps: { cellar: ['entries', 'total_count'] },
+      }) })
+      .mockResolvedValueOnce({ data: { props: { entries: [{}, {}, {}], total_count: 3 } } });
+    const props = await fetchCellarPage(2, 50);
+    expect(props.entries).toHaveLength(3);
+    expect(mockGet.mock.calls[4][1].headers['X-Inertia-Partial-Data']).toBe('entries,total_count');
+  });
+
   it('fetchCellarExport rejects a non-CSV response', async () => {
     mockGet.mockResolvedValueOnce({ data: '<html/>', headers: { 'content-type': 'text/html' } });
     await expect(fetchCellarExport(42)).rejects.toThrow(/not text\/csv/);

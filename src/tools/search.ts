@@ -55,7 +55,7 @@ function parseSearchResults(raw: unknown): VivinoSearchResult[] {
       winery: String(winery?.name ?? ''),
       region: region ? String(region.name) : null,
       country: country ? String(country.name) : null,
-      avg_rating: stats?.ratings_average != null ? Number(stats.ratings_average) : null,
+      avg_rating: Number(stats?.ratings_average) || null, // 0 = too few ratings
       ratings_count: stats?.ratings_count != null ? Number(stats.ratings_count) : null,
       style_id: wine.style_id != null ? Number(wine.style_id) : null,
       // /{wine-seo}/w/{vintage-id} — the same URL shape getUserRatings parses

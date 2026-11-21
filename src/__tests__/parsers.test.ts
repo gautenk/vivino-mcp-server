@@ -118,6 +118,15 @@ describe('parseWineDetails', () => {
     expect(result.vivino_url).toBe('https://www.vivino.com/chateau-test-cabernet-sauvignon/w/99001');
   });
 
+  it('reports Vivino\'s 0 (unknown ABV / too few ratings to average) as null', () => {
+    const raw = { wine: { id: 1, name: 'New', winery: { name: 'W' }, alcohol: 0,
+      statistics: { ratings_average: 0, ratings_count: 18 } } };
+    const result = parseWineDetails(raw);
+    expect(result.abv).toBeNull();
+    expect(result.avg_rating).toBeNull();
+    expect(result.ratings_count).toBe(18);
+  });
+
   it('returns nulls and empty arrays for missing optional fields', () => {
     const raw = { wine: { id: 1, name: 'Mystery', winery: { name: 'Unknown' } } };
     const result = parseWineDetails(raw);

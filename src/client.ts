@@ -214,6 +214,14 @@ export async function fetchActivities(
 // request needs the current asset version (X-Inertia-Version); a missing or
 // stale one gets a 409, so the version is bootstrapped from the HTML once.
 // /en/cellars redirects to /en/cellars/{cellar_id}; cellar_id is NOT the user ID.
+//
+// cellar_v2 (live by 2026-11-21, component "cellars/show_v2"): entries,
+// total_count and the statistics are Inertia *deferred props* — absent from
+// the HTML and the plain JSON, listed under page.deferredProps by group
+// ("cellar", "overview", "filter_options"). They are fetched with a partial
+// reload: X-Inertia-Partial-Component + X-Inertia-Partial-Data. The partial
+// response omits cellar_id, so it is taken from the bootstrap. Both shapes are
+// normalized to CellarPageProps so the tool doesn't care which one is live.
 export interface CellarPageProps {
   cellar_id: number;
   total_count: number;
@@ -222,24 +230,35 @@ export interface CellarPageProps {
   [key: string]: unknown;
 }
 
-let cellarBootstrap: { cellarId: number; version: string } | null = null;
+interface CellarBootstrap {
+  cellarId: number;
+  version: string;
+  component: string;
+  deferred: Record<string, string[]>;
+}
+
+let cellarBootstrap: CellarBootstrap | null = null;
 
 export class VivinoFormatError extends Error {}
 
-function assertCellarProps(page: unknown, where: string): CellarPageProps {
+const SHAPE_HINT = 'Vivino has probably changed the cellar page, or the session cookie is no longer signed in.';
+
+function assertCellarProps(page: unknown, where: string): Record<string, unknown> {
   const props = (page as { props?: Record<string, unknown> } | null)?.props;
-  if (!props || !Array.isArray(props.entries) || typeof props.total_count !== 'number'
-      || typeof props.cellar_id !== 'number') {
+  if (!props || !Array.isArray(props.entries) || typeof props.total_count !== 'number') {
     throw new VivinoFormatError(
-      `Vivino cellar ${where} did not have the expected shape (props.entries / total_count / ` +
-      'cellar_id). Vivino has probably changed the cellar page (feature flag cellar_v2?), ' +
-      'or the session cookie is no longer signed in.'
+      `Vivino cellar ${where} did not have the expected shape (props.entries / total_count). ${SHAPE_HINT}`
     );
   }
-  return props as unknown as CellarPageProps;
+  return props;
 }
 
-export function parseInertiaPage(html: string): { version: string; props: CellarPageProps } {
+export function parseInertiaPage(html: string): {
+  version: string;
+  component: string;
+  deferred: Record<string, string[]>;
+  props: CellarPageProps;
+} {
   const raw = cheerio.load(html)('[data-page]').attr('data-page');
   if (!raw) {
     throw new VivinoFormatError(
@@ -247,18 +266,95 @@ export function parseInertiaPage(html: string): { version: string; props: Cellar
       'signed in (VIVINO_SESSION_COOKIE) or Vivino has changed the cellar page.'
     );
   }
-  const page = JSON.parse(raw) as { version?: unknown };
-  return { version: String(page.version ?? ''), props: assertCellarProps(page, 'page HTML') };
+  const page = JSON.parse(raw) as {
+    version?: unknown; component?: unknown; deferredProps?: unknown; props?: Record<string, unknown>;
+  };
+  if (typeof page.props?.cellar_id !== 'number') {
+    throw new VivinoFormatError(`Vivino cellar page HTML had no props.cellar_id. ${SHAPE_HINT}`);
+  }
+  const deferred = page.deferredProps && typeof page.deferredProps === 'object'
+    ? page.deferredProps as Record<string, string[]>
+    : {};
+  return {
+    version: String(page.version ?? ''),
+    component: String(page.component ?? ''),
+    deferred,
+    props: page.props as CellarPageProps,
+  };
 }
 
-async function bootstrapCellar(opts: RetryOptions): Promise<{ cellarId: number; version: string }> {
+async function bootstrapCellar(opts: RetryOptions): Promise<CellarBootstrap> {
   const res = await withRetry(() =>
     axios.get(`${VIVINO_BASE_URL}/en/cellars`, { headers: baseHeaders(), timeout: 30_000 }),
     opts
   );
-  const { version, props } = parseInertiaPage(String(res.data));
-  cellarBootstrap = { cellarId: props.cellar_id, version };
+  const { version, component, deferred, props } = parseInertiaPage(String(res.data));
+  cellarBootstrap = { cellarId: props.cellar_id, version, component, deferred };
   return cellarBootstrap;
+}
+
+// Which props of a deferred group to request. currencies (~160 items) is left out.
+const CELLAR_PARTIAL_DATA = 'entries,total_count';
+const OVERVIEW_PARTIAL_DATA = 'overview';
+
+function inertiaGet(b: CellarBootstrap, params: Record<string, unknown>, partialData: string | null, opts: RetryOptions) {
+  return withRetry(() =>
+    axios.get(`${VIVINO_BASE_URL}/en/cellars/${b.cellarId}`, {
+      params,
+      headers: baseHeaders({
+        Accept: 'text/html, application/xhtml+xml',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Inertia': 'true',
+        'X-Inertia-Version': b.version,
+        ...(partialData ? {
+          'X-Inertia-Partial-Component': b.component,
+          'X-Inertia-Partial-Data': partialData,
+        } : {}),
+      }),
+      timeout: 20_000,
+    }),
+    opts
+  );
+}
+
+// v2 overview → the v1 statistics keys the tool reads. Note: v2's drinking
+// window totals count wines, v1's counted bottles.
+export function overviewToStatistics(raw: unknown): Record<string, unknown> {
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
+  const dw = o.drinking_windows ?? {};
+  const val = o.valuation ?? {};
+  return {
+    bottle_count: o.bottle_count ?? null,
+    ready_to_drink_count: dw.ready_to_drink?.total ?? null,
+    wines_to_hold_count: dw.hold?.total ?? null,
+    past_its_peak_count: dw.past_peak?.total ?? null,
+    unknown_drinking_window_count: dw.unknown?.total ?? null,
+    average_price_sum: val.total_value ?? null,
+    currency_code: val.currency ?? null,
+  };
+}
+
+async function fetchCellarPageWith(
+  b: CellarBootstrap, page: number, perPage: number, opts: RetryOptions
+): Promise<CellarPageProps> {
+  const v2 = Array.isArray(b.deferred.cellar);
+  const props = assertCellarProps(
+    (await inertiaGet(b, { page, per_page: perPage }, v2 ? CELLAR_PARTIAL_DATA : null, opts)).data,
+    'JSON response'
+  );
+  const result: CellarPageProps = {
+    ...props,
+    cellar_id: b.cellarId,
+    total_count: props.total_count as number,
+    entries: props.entries as unknown[],
+  };
+  // Statistics are only read from the first page; fetch the overview group once.
+  if (page === 1 && result.statistics === undefined && Array.isArray(b.deferred.overview)) {
+    const res = await inertiaGet(b, {}, OVERVIEW_PARTIAL_DATA, opts);
+    const overview = (res.data as { props?: Record<string, unknown> } | null)?.props?.overview;
+    if (overview && typeof overview === 'object') result.statistics = overviewToStatistics(overview);
+  }
+  return result;
 }
 
 export async function fetchCellarPage(
@@ -266,26 +362,18 @@ export async function fetchCellarPage(
   perPage: number,
   opts: RetryOptions = {}
 ): Promise<CellarPageProps> {
-  const boot = cellarBootstrap ?? await bootstrapCellar(opts);
-  const get = (b: { cellarId: number; version: string }) => withRetry(() =>
-    axios.get(`${VIVINO_BASE_URL}/en/cellars/${b.cellarId}`, {
-      params: { page, per_page: perPage },
-      headers: baseHeaders({
-        Accept: 'text/html, application/xhtml+xml',
-        'X-Requested-With': 'XMLHttpRequest',
-        'X-Inertia': 'true',
-        'X-Inertia-Version': b.version,
-      }),
-      timeout: 20_000,
-    }),
-    opts
-  );
+  const cached = cellarBootstrap;
+  const boot = cached ?? await bootstrapCellar(opts);
   try {
-    return assertCellarProps((await get(boot)).data, 'JSON response');
+    return await fetchCellarPageWith(boot, page, perPage, opts);
   } catch (err) {
-    if ((err as AxiosError).response?.status !== 409) throw err;
-    // Asset version moved on (Vivino deployed) — re-read it and retry once.
-    return assertCellarProps((await get(await bootstrapCellar(opts))).data, 'JSON response');
+    // 409: asset version moved on (Vivino deployed). A shape error with a cached
+    // bootstrap may mean the page component changed (e.g. a v1 → v2 rollout).
+    // Either way, re-read the page once and retry.
+    const stale = (err as AxiosError).response?.status === 409
+      || (err instanceof VivinoFormatError && cached !== null);
+    if (!stale) throw err;
+    return fetchCellarPageWith(await bootstrapCellar(opts), page, perPage, opts);
   }
 }
 
